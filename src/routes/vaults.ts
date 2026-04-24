@@ -1,11 +1,11 @@
 import { Router, type Request, type Response } from 'express'
 import { authenticate } from '../middleware/auth.middleware.js'
 import { UserRole } from '../types/user.js'
-import { VaultService } from '../services/vault.service.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 import { updateAnalyticsSummary } from '../db/database.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import {
+  IdempotencyConflictError,
   getIdempotentResponse,
   hashRequestPayload,
   saveIdempotentResponse,
@@ -117,6 +117,7 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
       await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody)
     }
 
+    try {
     const actorUserId = (req.header('x-user-id') ?? input.creator) || req.user?.userId || 'unknown'
     createAuditLog({
       actor_user_id: actorUserId,
@@ -133,7 +134,7 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
     console.error('Vault creation failed', error)
     res.status(500).json({ error: 'Failed to create vault.' })
   }
-})
+}
 
 /**
  * POST /api/vaults/:id/cancel
