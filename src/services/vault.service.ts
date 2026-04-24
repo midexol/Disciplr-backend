@@ -1,7 +1,7 @@
 import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault.js';
 
 // Assuming you have a configured pg pool exported from your db setup
-import pool from '../db/index.js'; 
+import { pool } from '../db/index.js'; 
 
 export class VaultService {
   /**
