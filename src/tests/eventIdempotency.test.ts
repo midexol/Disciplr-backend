@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/glo
 import knex, { Knex } from 'knex'
 import { EventProcessor } from '../services/eventProcessor.js'
 import { ParsedEvent } from '../types/horizonSync.js'
+import { setupTestDatabase, teardownTestDatabase, truncateTables, TestHarness } from './helpers/testDatabase.js'
 import {
   validateIdempotencyKey,
   IdempotencyKeyValidationError,
@@ -168,17 +169,13 @@ describe('idempotency store', () => {
 })
 
 describe('Event Processor Idempotency', () => {
+  let harness: TestHarness
   let db: Knex
   let processor: EventProcessor
 
   beforeAll(async () => {
-    db = knex({
-      client: 'pg',
-      connection: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/disciplr_test'
-    })
-
-    // Ensure migrations are up to date
-    await db.migrate.latest()
+    harness = await setupTestDatabase()
+    db = harness.knex
 
     processor = new EventProcessor(db, {
       maxRetries: 3,
@@ -187,16 +184,12 @@ describe('Event Processor Idempotency', () => {
   })
 
   afterAll(async () => {
-    await db.destroy()
+    await teardownTestDatabase(harness)
   })
 
   beforeEach(async () => {
-    // Clean tables
-    await db('validations').del()
-    await db('milestones').del()
-    await db('vaults').del()
-    await db('processed_events').del()
-    await db('failed_events').del()
+    // Clean tables using harness truncate utility
+    await truncateTables(db)
   })
 
   it('should process a vault_created event and ignore duplicates', async () => {

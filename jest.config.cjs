@@ -18,4 +18,8 @@ module.exports = {
     '**/src/tests/**/*.test.ts',
     '**/src/tests/**/*.test.js',
   ],
+
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+  },
 }

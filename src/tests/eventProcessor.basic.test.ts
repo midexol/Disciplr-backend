@@ -1,20 +1,17 @@
 import { EventProcessor } from '../services/eventProcessor.js'
 import { ParsedEvent } from '../types/horizonSync.js'
 import knex, { Knex } from 'knex'
+import { setupTestDatabase, teardownTestDatabase, truncateTables, TestHarness } from './helpers/testDatabase.js'
 
 describe('EventProcessor - Basic Functionality', () => {
+  let harness: TestHarness
   let db: Knex
   let processor: EventProcessor
 
   beforeAll(async () => {
-    // Setup test database
-    db = knex({
-      client: 'pg',
-      connection: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/disciplr_test'
-    })
-
-    // Run migrations
-    await db.migrate.latest()
+    // Setup test database using harness
+    harness = await setupTestDatabase()
+    db = harness.knex
 
     processor = new EventProcessor(db, {
       maxRetries: 3,
@@ -23,16 +20,12 @@ describe('EventProcessor - Basic Functionality', () => {
   })
 
   afterAll(async () => {
-    await db.destroy()
+    await teardownTestDatabase(harness)
   })
 
   beforeEach(async () => {
     // Clean tables before each test
-    await db('validations').delete()
-    await db('milestones').delete()
-    await db('vaults').delete()
-    await db('processed_events').delete()
-    await db('failed_events').delete()
+    await truncateTables(db)
   })
 
   describe('Idempotency', () => {
