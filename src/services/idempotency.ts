@@ -11,6 +11,10 @@ interface StoredIdempotentResponse<T = unknown> {
 
 const apiIdempotencyStore = new Map<string, StoredIdempotentResponse>()
 
+export const resetIdempotencyStore = (): void => {
+  apiIdempotencyStore.clear()
+}
+
 // Accepts alphanumeric, hyphens, underscores; 1–255 characters.
 export const IDEMPOTENCY_KEY_REGEX = /^[A-Za-z0-9_\-]{1,255}$/
 
@@ -31,9 +35,6 @@ export class IdempotencyKeyValidationError extends Error {
     this.name = 'IdempotencyKeyValidationError'
   }
 }
-
-// Accepts alphanumeric, hyphens, underscores; 1–255 characters.
-export const IDEMPOTENCY_KEY_REGEX = /^[A-Za-z0-9_\-]{1,255}$/
 
 export const validateIdempotencyKey = (key: string): void => {
   if (!IDEMPOTENCY_KEY_REGEX.test(key)) {
@@ -61,7 +62,14 @@ export const hashRequestPayload = (payload: unknown): string => {
 
 export async function getIdempotentResponse<T>(key: string, requestHash: string): Promise<T | null> {
   const pool = getPgPool()
-  if (!pool) return null
+  if (!pool) {
+    const record = apiIdempotencyStore.get(key)
+    if (!record) return null
+    if (record.requestHash !== requestHash) {
+      throw new IdempotencyConflictError('Idempotency key already used with a different payload')
+    }
+    return record.response as T
+  }
 
   const result = await pool.query(
     'SELECT response, request_hash FROM idempotency_keys WHERE key = $1',
@@ -80,7 +88,10 @@ export async function getIdempotentResponse<T>(key: string, requestHash: string)
 
 export async function saveIdempotentResponse(key: string, requestHash: string, vaultId: string, response: any): Promise<void> {
   const pool = getPgPool()
-  if (!pool) return
+  if (!pool) {
+    apiIdempotencyStore.set(key, { requestHash, resourceId: vaultId, response })
+    return
+  }
 
   await pool.query(
     'INSERT INTO idempotency_keys (key, request_hash, vault_id, response, created_at) VALUES ($1, $2, $3, $4, NOW())',

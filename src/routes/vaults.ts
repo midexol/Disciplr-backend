@@ -68,10 +68,6 @@ vaultsRouter.get(
  * POST /api/vaults
  */
 vaultsRouter.post('/', authenticate, requireJson, async (req: Request, res: Response) => {
-  const { creator, amount, endTimestamp, successDestination, failureDestination, milestoneHash, verifierAddress, contractId } = req.body
-// POST /api/vaults 
-
-vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
   // 1. Idempotency – validate key format, then replay cached response if key+hash match
   const idempotencyKey = req.header('idempotency-key') ?? null
 
@@ -88,7 +84,6 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
   }
 
   const requestHash = hashRequestPayload(req.body)
-  // Scope key to the authenticated user to prevent cross-user response leakage.
   const scopedKey = idempotencyKey !== null ? `${req.user!.userId}:${idempotencyKey}` : null
 
   if (scopedKey !== null) {
@@ -107,7 +102,6 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
     }
   }
 
-  // 2. Validate with Zod (Soroban-aligned bounds)
   const parseResult = createVaultSchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json(formatValidationError(parseResult.error))
@@ -116,15 +110,8 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
 
   const input = parseResult.data
 
-  // 3. Persist and respond
   try {
     const { vault } = await createVaultWithMilestones(input)
-
-  // 2. Try In-memory
-  const vault = vaults.find(v => v.id === req.params.id)
-  if (!vault) {
-    res.status(404).json({ error: 'Vault not found' })
-    return
     const responseBody: VaultCreateResponse = {
       vault,
       onChain: await buildVaultCreationPayload(input, vault),
@@ -135,7 +122,6 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
       await saveIdempotentResponse(scopedKey, requestHash, vault.id, responseBody)
     }
 
-    try {
     const actorUserId = (req.header('x-user-id') ?? input.creator) || req.user?.userId || 'unknown'
     createAuditLog({
       actor_user_id: actorUserId,
@@ -146,18 +132,13 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
     })
 
     updateAnalyticsSummary()
-
     res.status(201).json(responseBody)
   } catch (error) {
     console.error('Vault creation failed', error)
     res.status(500).json({ error: 'Failed to create vault.' })
   }
-}
+})
 
-/**
- * POST /api/vaults/:id/cancel
- */
-vaultsRouter.post('/:id/cancel', authenticate, requireJson, async (req, res) => {
 // ─── GET /api/vaults/:id ─────────────────────────────────────────────────────
 
 vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {

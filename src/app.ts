@@ -113,7 +113,7 @@ app.use(
 );
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
 
 app.use((_req, res, next) => {
   res.setHeader("X-Timezone", "UTC");
