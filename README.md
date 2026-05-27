@@ -123,6 +123,12 @@ curl -X POST http://localhost:3000/api/jobs/enqueue \
 - `ANALYTICS_RECOMPUTE_INTERVAL_MS` (default: `300000`)
 - `MAX_JSON_BODY_SIZE` (default: `500kb`)
 
+### Notification provider
+
+- `NOTIFICATION_PROVIDER` (default: `console`) — choose between `console` and `email` providers.
+
+The `email` provider includes bounded retries with exponential backoff for transient failures and basic bounce classification. Permanent bounces are recorded in an in-memory bounce store and will be treated as non-retryable by the job queue to avoid repeated attempts. In production replace the provider's send implementation with your SMTP or API-based client (e.g., nodemailer, SendGrid).
+
 ### Example: create a vault
 - Node.js + TypeScript
 - Express
