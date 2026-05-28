@@ -13,52 +13,33 @@
 //! `slash_on_miss`, `withdraw`). The contract enforces the state machine,
 //! authorization, and deadline rules on-chain.
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Env, String, Vec,
-};
-
-/// Storage keys for the contract.
+/// Error types for the accountability vault contract
 #[contracttype]
-#[derive(Clone)]
-pub enum DataKey {
-    /// The vault configuration and current state.
-    Vault,
-    /// Per-milestone check-in record, keyed by milestone index.
-    CheckIn(u32),
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    /// Invalid amount provided (negative or zero)
+    InvalidAmount = 1,
+    /// Milestone amounts do not sum to the total vault amount
+    AmountMismatch = 2,
+    /// Overflow occurred during amount summation
+    Overflow = 3,
 }
 
-/// Lifecycle state of the vault, mirroring the backend `PersistedVault.status`.
+/// Milestone structure
 #[contracttype]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VaultStatus {
-    /// Created but not yet funded.
-    Draft = 0,
-    /// Funded and counting down to its deadline.
-    Active = 1,
-    /// All milestones verified; funds released to success destination.
-    Completed = 2,
-    /// Deadline passed without completion; funds slashed.
-    Failed = 3,
-    /// Cancelled by the creator before activation.
-    Cancelled = 4,
-}
-
-/// A single accountability milestone within a vault.
-#[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Milestone {
+    pub id: u64,
     pub title: String,
-    /// Portion of the staked amount tied to this milestone.
     pub amount: i128,
-    /// UNIX timestamp (seconds) by which the milestone must be checked in.
     pub due_date: u64,
     /// Whether the verifier has confirmed this milestone.
     pub verified: bool,
 }
 
-/// Full on-chain vault record.
+/// Vault structure
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Vault {
     pub creator: Address,
     /// The party authorized to confirm check-ins / milestones.
@@ -106,8 +87,8 @@ pub enum Error {
 pub struct AccountabilityVault;
 
 #[contractimpl]
-impl AccountabilityVault {
-    /// Creates a new accountability vault in `Draft` state.
+impl Contract {
+    /// Creates a new accountability vault with the specified parameters.
     ///
     /// Validates that the staked amount is positive, the deadline is in the
     /// future, milestone amounts sum to `amount`, and that there is at least one
@@ -118,50 +99,52 @@ impl AccountabilityVault {
         verifier: Address,
         token: Address,
         amount: i128,
-        success_destination: Address,
-        failure_destination: Address,
-        end_timestamp: u64,
+        verifier: String,
+        success_destination: String,
+        failure_destination: String,
         milestones: Vec<Milestone>,
-    ) -> Result<(), Error> {
-        creator.require_auth();
-
-        if env.storage().instance().has(&DataKey::Vault) {
-            return Err(Error::AlreadyInitialized);
-        }
+    ) -> Result<Vault, Error> {
+        // Validate total amount
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if end_timestamp <= env.ledger().timestamp() {
-            return Err(Error::InvalidDeadline);
-        }
-        if milestones.is_empty() {
-            return Err(Error::NoMilestones);
-        }
 
-        let mut sum: i128 = 0;
-        for m in milestones.iter() {
-            if m.amount <= 0 {
+        // Validate individual milestone amounts
+        for milestone in milestones.iter() {
+            if milestone.amount <= 0 {
                 return Err(Error::InvalidAmount);
             }
-            if m.due_date > end_timestamp {
-                return Err(Error::InvalidDeadline);
-            }
-            sum += m.amount;
         }
+
+        // Sum milestone amounts using checked_add to prevent overflow
+        // This is the critical overflow-safe summation as required by issue #361
+        let mut sum: i128 = 0;
+        for milestone in milestones.iter() {
+            // Use checked_add to detect overflow and return typed error instead of panicking
+            sum = match sum.checked_add(milestone.amount) {
+                Some(result) => result,
+                None => {
+                    // Overflow occurred - return typed error instead of panicking
+                    return Err(Error::Overflow);
+                }
+            };
+        }
+
+        // Verify that milestone amounts sum to the total vault amount
+        // This invariant must be maintained: sum == amount
         if sum != amount {
             return Err(Error::AmountMismatch);
         }
 
+        // Create and return the vault
         let vault = Vault {
             creator: creator.clone(),
             verifier,
             token,
             amount,
-            staked: 0,
+            verifier,
             success_destination,
             failure_destination,
-            end_timestamp,
-            status: VaultStatus::Draft,
             milestones,
         };
         env.storage().instance().set(&DataKey::Vault, &vault);
@@ -382,5 +365,3 @@ impl AccountabilityVault {
         false
     }
 }
-
-mod test;

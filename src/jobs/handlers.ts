@@ -1,8 +1,7 @@
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
-import { markVaultExpiries } from '../services/vault.js'
-import { buildSlashOnMissPayload } from '../services/soroban.js'
+import { markVaultExpiries } from '../services/vaultExpiry.service.js'
 
 type JobHandlerRegistry = {
   [K in JobType]: JobHandler<K>

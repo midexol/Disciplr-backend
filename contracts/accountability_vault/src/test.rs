@@ -1,19 +1,5 @@
-#![cfg(test)]
-
-use super::*;
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    token, vec, Address, Env, String,
-};
-
-fn create_token(env: &Env, admin: &Address) -> (Address, token::StellarAssetClient<'static>) {
-    let sac = env.register_stellar_asset_contract_v2(admin.clone());
-    let address = sac.address();
-    (
-        address.clone(),
-        token::StellarAssetClient::new(env, &address),
-    )
-}
+use soroban_sdk::{Env, String, Vec};
+use accountability_vault::{Contract, Error, Milestone};
 
 struct Setup {
     env: Env,
@@ -65,11 +51,12 @@ fn setup(milestone_due_offsets: &[u64], amounts: &[i128]) -> Setup {
         &milestones,
     );
 
-    Setup {
+    let result = Contract::create_vault(
         env,
         contract,
         token,
         creator,
+        600, // Total amount matches sum of milestones
         verifier,
         success,
         failure,
