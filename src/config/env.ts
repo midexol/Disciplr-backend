@@ -89,10 +89,20 @@ export const envSchema = z
     RETRY_BACKOFF_MS: nonNegativeInt(100),
 
     // ── Soroban ─────────────────────────────────────────────────
-    SOROBAN_CONTRACT_ID: z.string().optional(),
+    SOROBAN_CONTRACT_ID: z.string().optional().refine(
+      (v) => !v || /^C[0-9A-Z]{55}$/.test(v),
+      'must be a valid Soroban contract ID (56-char base32 starting with C)'
+    ),
     SOROBAN_NETWORK_PASSPHRASE: z.string().optional(),
-    SOROBAN_SOURCE_ACCOUNT: z.string().optional(),
-    STELLAR_NETWORK_PASSPHRASE: z.string().optional(),
+    SOROBAN_SOURCE_ACCOUNT: z.string().optional().refine(
+      (v) => !v || /^G[0-9A-Z]{55}$/.test(v),
+      'must be a valid Stellar account public key (starting with G)'
+    ),
+    SOROBAN_RPC_URL: httpUrl().optional(),
+    SOROBAN_SECRET_KEY: z.string().optional().refine(
+      (v) => !v || /^S[0-9A-Z]{55}$/.test(v),
+      'must be a valid Stellar secret key (starting with S)'
+    ),
 
     // ── Job system ──────────────────────────────────────────────
     JOB_WORKER_CONCURRENCY: positiveInt(2),
@@ -127,12 +137,29 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
   })
-  .superRefine((data, ctx) => {
+    .superRefine((data, ctx) => {
+    // Existing CORS warning
     if (data.NODE_ENV === "production" && data.CORS_ORIGINS === "*") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["CORS_ORIGINS"],
         message: 'CORS_ORIGINS cannot be "*" in production environment',
+      });
+    }
+    // Warning for partially configured Soroban variables
+    const sorobanVars = [
+      "SOROBAN_CONTRACT_ID",
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "SOROBAN_SOURCE_ACCOUNT",
+      "SOROBAN_RPC_URL",
+      "SOROBAN_SECRET_KEY",
+    ];
+    const present = sorobanVars.filter((key) => data[key as keyof typeof data] !== undefined && data[key as keyof typeof data] !== "");
+    if (present.length > 0 && present.length < sorobanVars.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: 'Partial Soroban configuration detected; submit mode will be disabled',
       });
     }
   });
