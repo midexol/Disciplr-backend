@@ -48,15 +48,18 @@ jobs:
 
       - name: Migration status
         run: npm run migrate:status
-
       - name: Assert no pending migrations
         run: |
           node -e "const {execSync} = require('child_process'); const out = execSync('npx knex migrate:status --knexfile knexfile.cjs', {encoding: 'utf8'}); if (/not yet run|Pending|down|Migrations pending/i.test(out)) { console.error('Pending migrations detected:\n' + out); process.exit(1); } console.log('No pending migrations');"
-
       - name: Assert migration status is clean
         run: |
           npm run migrate:status | tee /tmp/migrate-status.txt
           grep -q 'Found 0 Pending Migration file/files.' /tmp/migrate-status.txt
+
+      - name: Test
+        run: npm test
+        env:
+          NODE_ENV: test
 
   security-scan:
     runs-on: ubuntu-latest
