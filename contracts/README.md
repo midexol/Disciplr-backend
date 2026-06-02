@@ -24,11 +24,7 @@ Implements the vault lifecycle that the backend models off-chain in
 
 | Function | Purpose |
 |---|---|
-| `init` | Initialize the deployment admin that manages instance-level policy. Must be called once before allowlist administration. |
-| `set_admin` | Rotate the deployment admin. Only the current admin may call this. |
-| `set_allowed_token` | Add or remove a SEP-41 token contract from the instance-level allowlist used for new vaults. |
-| `is_allowed_token` | Read whether a token contract is currently allowed for new vault creation. |
-| `create_vault` | Create a `Draft` vault with milestones, verifier, token, and success/failure destinations. Validates amount, deadline, milestone sums, and that the requested token is allowlisted. |
+| `create_vault` | Create a `Draft` vault with milestones, verifier, and success/failure destinations. Validates amount, deadline, that milestone amounts sum to the total, and rejects obviously-degenerate salt/vault_id values (all-zero or all-ones `BytesN<32>`). |
 | `stake` | Creator transfers the SEP-41 token into the contract; `Draft` -> `Active`. |
 | `check_in` | Designated verifier confirms a milestone before its `due_date`. |
 | `slash_on_miss` | After the deadline with unverified milestones, slash funds to `failure_destination`; `Active` -> `Failed`. |
