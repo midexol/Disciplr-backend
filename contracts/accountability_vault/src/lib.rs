@@ -77,9 +77,11 @@ use soroban_sdk::{
     String, Symbol, Vec,
 };
 
-/// Maximum amount allowed for a single milestone.
-/// Prevents absurd i128 milestone stakes while keeping normal vault amounts usable.
-pub const MAX_AMOUNT_PER_MILESTONE: i128 = 1_000_000_000_000_000_000;
+/// Maximum allowed horizon between vault creation and its deadline.
+///
+/// 5 years in seconds. Prevents vaults from locking storage TTL guarantees
+/// indefinitely and keeps analytics meaningful.
+const MAX_DEADLINE_HORIZON: u64 = 5 * 365 * 24 * 60 * 60;
 
 /// Storage keys for the contract.
 #[contracttype]
@@ -130,6 +132,7 @@ pub struct VerifierSet {
 #[contracttype]
 #[derive(Clone)]
 pub struct Milestone {
+    /// Human-readable title describing the milestone goal.
     pub title: String,
     /// Portion of the staked amount tied to this milestone.
     pub amount: i128,
@@ -145,6 +148,7 @@ pub struct Milestone {
 #[contracttype]
 #[derive(Clone)]
 pub struct Vault {
+    /// Address that created the vault and owns the staked funds.
     pub creator: Address,
     /// Set of addresses authorized to approve milestones via `check_in`.
     /// A milestone is verified once at least `approval_threshold` distinct members
@@ -168,7 +172,9 @@ pub struct Vault {
     pub failure_destination: Address,
     /// Overall vault deadline (seconds since epoch, UTC).
     pub end_timestamp: u64,
+    /// Current lifecycle state of the vault.
     pub status: VaultStatus,
+    /// Ordered list of milestones with amounts, due dates, and verification status.
     pub milestones: Vec<Milestone>,
     /// Address authorized to pause and unpause this vault in emergencies.
     pub guardian: Address,
@@ -181,24 +187,43 @@ pub struct Vault {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// Vault storage already exists for the given `vault_id`.
     AlreadyInitialized = 1,
+    /// No vault found for the given `vault_id`.
     NotInitialized = 2,
+    /// Amount is zero or negative.
     InvalidAmount = 3,
+    /// Deadline is in the past, exceeds vault end, or beyond the 5-year horizon.
     InvalidDeadline = 4,
+    /// Milestone list is empty.
     NoMilestones = 5,
+    /// Operation requires the vault to be in `Draft` state.
     NotDraft = 6,
+    /// Operation requires the vault to be in `Active` state.
     NotActive = 7,
+    /// Caller is not permitted for this operation (backward compatibility).
     Unauthorized = 8, // backward compatibility
+    /// Caller is not the vault creator.
     NotCreator = 23,
+    /// Caller is not a member of the verifier set.
     NotVerifier = 24,
+    /// Caller is neither the creator nor a verifier.
     NotCreatorOrVerifier = 25,
+    /// Vault has already been funded; cannot stake again.
     AlreadyStaked = 9,
+    /// Milestone index is outside the valid range.
     MilestoneIndexOutOfRange = 10,
+    /// Milestone has already reached the verification threshold.
     MilestoneAlreadyVerified = 11,
+    /// Current time is past the milestone or vault deadline.
     DeadlinePassed = 12,
+    /// Current time has not yet reached the vault deadline.
     DeadlineNotReached = 13,
+    /// Not all milestones have been verified.
     MilestonesIncomplete = 14,
+    /// Vault staked balance is zero; nothing to withdraw.
     NothingToWithdraw = 15,
+    /// Received amount does not match the declared vault amount.
     AmountMismatch = 16,
     /// `stake_from` was called but the spender's token allowance from `from`
     /// is less than the vault's staking amount.
@@ -215,8 +240,15 @@ pub enum Error {
     StakedRemaining = 22,
     /// Operation rejected because the vault is in `Disputed` state.
     VaultDisputed = 23,
+    /// `failure_destination` is the same as `creator`, which would nullify the
+    /// accountability mechanism by returning slashed funds to the creator.
+    InvalidFailureDestination = 26,
 }
 
+/// Accountability vault contract entry point.
+///
+/// Hosts multiple independent vaults keyed by `vault_id`, each enforcing a
+/// time-locked staking lifecycle with milestone verification and slash-on-miss.
 #[contract]
 pub struct AccountabilityVault;
 
@@ -265,8 +297,14 @@ impl AccountabilityVault {
         if end_timestamp <= env.ledger().timestamp() {
             return Err(Error::InvalidDeadline);
         }
+        if end_timestamp > env.ledger().timestamp() + MAX_DEADLINE_HORIZON {
+            return Err(Error::InvalidDeadline);
+        }
         if milestones.is_empty() {
             return Err(Error::NoMilestones);
+        }
+        if failure_destination == creator {
+            return Err(Error::InvalidFailureDestination);
         }
 
         let mut sum: i128 = 0;

@@ -142,6 +142,20 @@ env.events().publish(
 The backend `submitCheckIn(vaultId, milestoneId, evidenceHash)` passes the hex-encoded
 hash, which is decoded to `BytesN<32>` before calling the contract.
 
+#### Slash-to-Self Guard
+
+`create_vault` rejects any vault where `failure_destination` equals `creator`. Allowing a
+creator to designate themselves as the failure destination would nullify the accountability
+mechanism: a missed deadline would simply return the staked funds to the creator with no
+penalty. Such vaults are rejected at creation time with `Error::InvalidFailureDestination`.
+
+#### Deadline Horizon Cap
+
+`create_vault` rejects any `end_timestamp` more than 5 years (157,680,000 seconds) past the
+current ledger timestamp. Allowing deadlines decades or centuries in the future would lock
+persistent storage TTL guarantees indefinitely and pollute analytics with unrealistic vaults.
+The constant `MAX_DEADLINE_HORIZON` is defined in `lib.rs` and enforced at vault creation.
+
 ### Arithmetic Safety
 
 The `create_vault` function validates that every individual milestone amount is strictly positive (`amount > 0`). If any milestone has an amount `<= 0`, the contract immediately rejects the transaction with `Error::InvalidAmount`, even if valid positive milestone amounts precede or follow it. The sum of all milestone amounts must also match the declared vault `amount` exactly, otherwise the transaction is rejected with `Error::AmountMismatch`.
@@ -160,7 +174,7 @@ refactors continue to return typed contract errors instead of risking host-level
 | 1 | `AlreadyInitialized` | Vault storage already set |
 | 2 | `NotInitialized` | Vault not yet created |
 | 3 | `InvalidAmount` | Zero or negative amount |
-| 4 | `InvalidDeadline` | Deadline in the past or milestone exceeds vault end |
+| 4 | `InvalidDeadline` | Deadline in the past, exceeds vault end, or beyond 5-year horizon |
 | 5 | `NoMilestones` | Empty milestone list |
 | 6 | `NotDraft` | Expected Draft state |
 | 7 | `NotActive` | Expected Active state |
@@ -179,7 +193,11 @@ refactors continue to return typed contract errors instead of risking host-level
 | 20 | `NoVerifiers` | Empty verifier list |
 | 21 | `InvalidThreshold` | Threshold is 0 or exceeds verifier count |
 | 22 | `StakedRemaining` | Reclaim attempted while stake is non-zero |
+| 23 | `NotCreator` | Caller is not the vault creator |
+| 24 | `NotVerifier` | Caller is not a member of the verifier set |
+| 25 | `NotCreatorOrVerifier` | Caller is neither the creator nor a verifier |
 | 23 | `VaultDisputed` | Operation rejected because vault is in `Disputed` state |
+| 26 | `InvalidFailureDestination` | `failure_destination` equals `creator` |
 
 ### Performance & Gas Benchmarks
 
@@ -302,8 +320,22 @@ cargo fmt
 
 #### Lint
 
-The workspace enables `clippy::all` warnings via `[workspace.lints.clippy]` in
-`contracts/Cargo.toml`. Run clippy with warnings treated as errors:
+The workspace enforces a consistent quality bar via `[workspace.lints]` in
+`contracts/Cargo.toml`. Each member crate opts in with `lints.workspace = true`.
+
+**Rust lints:**
+
+| Lint | Level | Purpose |
+|------|-------|---------|
+| `rust_2024_compatibility` | warn | Surface future-edition breakage early |
+| `missing_docs` | warn | Require documentation on all public items |
+| `unsafe_code` | deny | Prohibit `unsafe` blocks in contract code |
+
+**Clippy categories:**
+
+`all`, `correctness`, `suspicious`, `complexity`, `perf`, `style` — all at `warn`.
+
+Run clippy with warnings treated as errors:
 
 ```bash
 cd contracts
