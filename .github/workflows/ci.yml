@@ -53,3 +53,37 @@ jobs:
         run: npm test
         env:
           NODE_ENV: test
+
+  contracts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
+
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/accountability_vault/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/accountability_vault/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-contract
+        run: |
+          cargo install cargo-contract --locked
+          rustup target add wasm32-unknown-unknown
+
+      - name: Build Soroban contract
+        run: cargo contract build --manifest-path contracts/accountability_vault/Cargo.toml --release
+
+      - name: Run Soroban contract tests
+        run: cargo test --manifest-path contracts/accountability_vault/Cargo.toml --verbose
