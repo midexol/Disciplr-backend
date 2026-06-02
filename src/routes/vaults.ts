@@ -14,10 +14,11 @@ import {
   IdempotencyConflictError,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
-import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById } from '../services/vaultStore.js'
+import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
 import { createVaultSchema, flattenZodErrors } from '../services/vaultValidation.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
+import { etagMatches } from '../utils/etag.js'
 import type { VaultCreateResponse } from '../types/vaults.js'
 
 export const vaultsRouter = Router()
@@ -126,27 +127,41 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
 // ─── GET /api/vaults/:id ─────────────────────────────────────────────────────
 
 // GET /api/vaults/:id
+// Supports ETag-based HTTP caching via If-None-Match header
+// Returns 304 Not Modified if client holds current version
 vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
-  // Try DB-backed store first (falls back to in-memory automatically)
   try {
-    const vault = await getVaultById(req.params.id)
-    if (vault) {
-      res.json(vault)
-      return
+    // Try DB-backed store first (falls back to in-memory automatically)
+    let vault = await getVaultById(req.params.id)
+    
+    if (!vault) {
+      // Legacy in-memory fallback
+      vault = vaults.find((v) => v.id === req.params.id)
+      if (!vault) {
+        res.status(404).json({ error: 'Vault not found' })
+        return
+      }
     }
-  } catch (_err) {
-    // fall through to legacy in-memory array
-  }
 
-  // Legacy in-memory fallback
-  const vault = vaults.find((v) => v.id === req.params.id)
-  if (!vault) {
-    res.status(404).json({ error: 'Vault not found' })
-    return
+    // Compute ETag from vault revision (optimistic-concurrency version)
+    const etag = await getVaultETag(req.params.id)
+    if (etag) {
+      res.set('ETag', etag)
+      res.set('Cache-Control', 'private, max-age=0, must-revalidate')
+
+      // Check If-None-Match header for conditional GET support
+      // RFC 7232 Section 3.2: If any of the validators match, send 304
+      const ifNoneMatch = req.headers['if-none-match'] as string | undefined
+      if (etagMatches(ifNoneMatch, etag)) {
+        res.status(304).end()
+        return
+      }
+    }
+
+    res.json(vault)
+  } catch (_err) {
+    res.status(500).json({ error: 'Failed to fetch vault' })
   }
-  
-  // Return the vault found in legacy in-memory storage
-  res.json(vault)
 })
 
 // PATCH /api/vaults/:id — optimistic-lock update; requires X-Vault-Revision header
