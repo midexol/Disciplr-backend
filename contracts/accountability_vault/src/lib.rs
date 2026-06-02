@@ -134,14 +134,8 @@ pub enum Error {
     NothingToWithdraw = 15,
     /// Received amount does not match the declared vault amount.
     AmountMismatch = 16,
-    /// Milestone list exceeds the bounded loop limit.
-    TooManyMilestones = 17,
-    /// The requested token is not in the deployment-wide allowlist.
-    TokenNotAllowed = 26,
-    /// Admin storage is already initialized.
-    AdminAlreadyInitialized = 27,
-    /// Caller is not the configured admin.
-    NotAdmin = 28,
+    /// Deadline is in the past.
+    DeadlineInPast = 28,
 }
 
 /// Accountability vault contract entry point.
@@ -224,8 +218,10 @@ impl AccountabilityVault {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        let now = env.ledger().timestamp();
-        if end_timestamp <= now || end_timestamp > now + MAX_DEADLINE_HORIZON {
+        if end_timestamp <= env.ledger().timestamp() {
+            return Err(Error::DeadlineInPast);
+        }
+        if end_timestamp > env.ledger().timestamp() + MAX_DEADLINE_HORIZON {
             return Err(Error::InvalidDeadline);
         }
         if milestones.is_empty() {

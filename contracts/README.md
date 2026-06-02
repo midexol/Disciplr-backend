@@ -56,18 +56,10 @@ mirrors `PersistedVault.status` in `src/types/vaults.ts`. Emitted events
 `vault_completed`, `vault_cancelled`, `vault_withdrawn`) align with the topics
 consumed by the backend event parser.
 
-### Event reference
-
-| Event | Topics | Data | Notes |
-|---|---|---|---|
-| `vault_created` | `(vault_created, creator)` | `amount` | Emitted by `create_vault`. |
-| `vault_staked` | `(vault_staked, from)` | `amount` | Legacy funding event; preserved for backward-compatible listeners. |
-| `vault_funded` | `(vault_funded, token, from)` | `net_staked_amount` | Rich funding event emitted alongside `vault_staked`. Carries the SEP-41 token address so `eventParser.ts` can reconcile the contract address without a separate Horizon query. |
-| `milestone_checked_in` | `(milestone_checked_in, caller, source)` | `milestone_index` | `source` is `"verifier"` or `"oracle"`. |
-| `vault_slashed` | `(vault_slashed, failure_destination)` | `slashed_amount` | Emitted by `slash_on_miss`. |
-| `vault_completed` | `(vault_completed, success_destination)` | `released_amount` | Emitted by `claim`. |
-| `vault_cancelled` | `(vault_cancelled, creator)` | `0` | Emitted by `cancel_vault` or `withdraw` on Draft. |
-| `vault_withdrawn` | `(vault_withdrawn, creator)` | `refunded_amount` | Emitted by `withdraw` on Active. |
+### Error Handling & Precise Deadline Errors
+To allow the backend to render precise, unambiguous user-facing errors:
+- **`Error::DeadlineInPast` (28)**: Returned when the configured `end_timestamp` is less than or equal to the current ledger timestamp.
+- **`Error::InvalidDeadline` (4)**: Reserved strictly for structural mismatches (such as a milestone `due_date` exceeding `end_timestamp` or non-monotonic due-date ordering).
 
 ## Build & test
 
