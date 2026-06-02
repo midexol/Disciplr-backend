@@ -41,6 +41,9 @@ export const envSchema = z
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("development"),
+    LOG_LEVEL: z
+      .enum(["debug", "info", "warn", "error"])
+      .default("info"),
     PORT: positiveInt(3000),
     SERVICE_NAME: z.string().default("disciplr-backend"),
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required").refine(
