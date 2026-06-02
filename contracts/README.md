@@ -176,6 +176,61 @@ The contract maintains comprehensive test coverage including:
 - Joint deadline extension (`extend_deadline`)
 - Gas benchmarks with hard CPU/memory bounds
 
+### Fuzz Testing
+
+A cargo-fuzz harness covers the `create_vault` entry-point under
+`contracts/accountability_vault/fuzz/`.
+
+#### What it tests
+
+The target generates random `(amount, end_timestamp_offset, milestones, verifier_set)`
+tuples and asserts that the contract never panics — every call must return either
+`Ok(())` or a typed `Error` variant:
+
+| Invariant exercised | Expected error |
+|---|---|
+| `amount <= 0` | `Error::InvalidAmount` |
+| `end_timestamp <= ledger.timestamp()` | `Error::InvalidDeadline` |
+| no milestones | `Error::NoMilestones` |
+| any milestone `amount <= 0` | `Error::InvalidAmount` |
+| any milestone `due_date > end_timestamp` | `Error::InvalidDeadline` |
+| milestone amounts don't sum to vault amount | `Error::AmountMismatch` |
+| empty verifier list | `Error::NoVerifiers` |
+| threshold == 0 or > verifier count | `Error::InvalidThreshold` |
+
+#### Prerequisites
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz
+```
+
+#### Run locally
+
+```bash
+cd contracts/accountability_vault
+# Run for 60 seconds, then stop
+cargo fuzz run create_vault -- -max_total_time=60
+
+# Run indefinitely (Ctrl-C to stop)
+cargo fuzz run create_vault
+```
+
+#### Reproduce a crash
+
+If the fuzzer saves a crash input under `fuzz/artifacts/create_vault/`, reproduce it with:
+
+```bash
+cargo fuzz run create_vault fuzz/artifacts/create_vault/<crash-file>
+```
+
+#### CI
+
+The CI job (`contracts-fuzz` in `.github/workflows/ci.yml`) runs the harness for
+30 seconds with `-max_total_time=30` on every push to `main` and every pull request.
+A fuzzer crash causes the job to fail with a non-zero exit code, surfacing the
+reproducer in the workflow artifacts.
+
 ### Deployment
 
 Deploy the contract to Soroban testnet or mainnet using the Soroban CLI:

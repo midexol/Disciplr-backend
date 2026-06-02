@@ -12,6 +12,11 @@ soroban-sdk = "21.0.0"
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 
+# Expose testutils as an optional feature so the fuzz crate can enable it
+# without making it a mandatory dependency of the main library.
+[features]
+testutils = ["soroban-sdk/testutils"]
+
 [lints]
 workspace = true
 
