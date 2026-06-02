@@ -41,6 +41,30 @@ token::Client::new(&env, &token_addr).transfer(          // ← external call la
 );
 ```
 
+#### Withdraw Refund Semantics
+
+`withdraw` has two behaviours depending on vault state:
+
+| Vault state | Effect |
+|-------------|--------|
+| `Draft` | Vault transitions to `Cancelled`. No tokens are held, so no transfer occurs. |
+| `Active` (no verified check-ins) | Full `staked` amount is returned to the `creator`. Vault transitions to `Cancelled`. |
+
+For the `Active` path the contract guarantees:
+
+- **Creator balance restored** — the token balance of `creator` after `withdraw` equals the
+  balance before `stake` (i.e. the original minted/held amount is returned in full).
+- **Contract balance zeroed** — the contract holds no tokens after the refund; `vault.staked`
+  is set to `0` before the transfer (CEI) and the on-chain token balance drops to `0`.
+- **Blocked when paused** — if the guardian has called `emergency_pause`, `withdraw` on an
+  `Active` vault returns `Error::Paused`. Draft-vault cancellation is not affected.
+- **Blocked after any check-in** — if at least one milestone has been verified,
+  `withdraw` returns `Error::Unauthorized` to prevent unilateral fund recovery once
+  progress has been committed.
+
+These invariants are tested in `test_withdraw_active_refunds_creator` (balance round-trip)
+and `test_withdraw_active_paused_blocked` (pause guard).
+
 #### Emergency Pause (Guardian Role)
 
 A `guardian` address is set at `create_vault` time. The guardian may call:

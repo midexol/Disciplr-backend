@@ -1310,6 +1310,53 @@ fn test_multi_verifier_2of2_full_claim_flow() {
     assert_eq!(token_client.balance(&success), 1_000);
 }
 
+// ── issue #XXX: withdraw refund balance preservation ─────────────────────────
+
+/// Verifies the full fund-then-withdraw round-trip:
+/// 1. Mint `amount` tokens to creator.
+/// 2. Stake them into an Active vault (creator balance → 0, contract balance → amount).
+/// 3. Withdraw (no check-ins, so no verified milestones) → creator balance restored,
+///    contract balance zeroed, vault status Cancelled.
+#[test]
+fn test_withdraw_active_refunds_creator() {
+    let s = setup(&[100], &[500]);
+    let token_client = token::Client::new(&s.env, &s.token);
+    let contract_addr = s.contract.address.clone();
+
+    // Pre-stake: creator holds the full mint; contract holds nothing.
+    assert_eq!(token_client.balance(&s.creator), 500);
+    assert_eq!(token_client.balance(&contract_addr), 0);
+
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Post-stake: tokens moved to contract.
+    assert_eq!(token_client.balance(&s.creator), 0);
+    assert_eq!(token_client.balance(&contract_addr), 500);
+
+    // No check-ins → withdraw refunds creator and cancels the vault.
+    s.contract.withdraw(&s.vault_id, &s.creator);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Cancelled);
+    assert_eq!(vault.staked, 0);
+
+    // Creator balance fully restored; contract balance is zero.
+    assert_eq!(token_client.balance(&s.creator), 500);
+    assert_eq!(token_client.balance(&contract_addr), 0);
+}
+
+/// Withdraw on an Active, paused vault must fail with Paused.
+/// (Complements test_pause_blocks_withdraw_active with explicit vault_id pattern.)
+#[test]
+#[should_panic]
+fn test_withdraw_active_paused_blocked() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract.emergency_pause(&s.guardian);
+    // Must fail with Error::Paused.
+    s.contract.withdraw(&s.vault_id, &s.creator);
+}
+
 // ── gas benchmarks ───────────────────────────────────────────────────────────
 
 #[test]
