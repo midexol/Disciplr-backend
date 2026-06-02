@@ -338,8 +338,16 @@ impl AccountabilityVault {
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
+        // Legacy event: preserved for backward-compatible listeners.
         env.events()
-            .publish((String::from_str(&env, "vault_staked"), from), vault.amount);
+            .publish((Symbol::new(&env, "vault_staked"), from.clone()), vault.staked);
+
+        // Rich funding event: carries token address so eventParser.ts can
+        // reconcile the SEP-41 contract address without a separate Horizon query.
+        env.events().publish(
+            (Symbol::new(&env, "vault_funded"), vault.token.clone(), from),
+            vault.staked,
+        );
         Ok(())
     }
 

@@ -365,6 +365,58 @@ fn test_vault_staked_emits_symbol_topic() {
     assert_eq!(actual, Symbol::new(&s.env, "vault_staked"));
 }
 
+// ── #481: vault_funded event with token address ───────────────────────────────
+
+#[test]
+fn test_vault_funded_event_emitted_on_stake() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Events: [vault_created(0), vault_staked(1), vault_funded(2)]
+    let events = s.env.events().all();
+    assert!(events.len() >= 3, "expected vault_created + vault_staked + vault_funded");
+
+    let (_, topics, data) = events.get(2).unwrap();
+    // topic[0] = "vault_funded"
+    let name = Symbol::try_from_val(&s.env, &topics.get(0).unwrap())
+        .expect("topic[0] must be Symbol");
+    assert_eq!(name, Symbol::new(&s.env, "vault_funded"));
+    // topic[1] = token address
+    let token_val: Address = Address::try_from_val(&s.env, &topics.get(1).unwrap())
+        .expect("topic[1] must be an Address (token)");
+    assert_eq!(token_val, s.token);
+    // topic[2] = from (creator)
+    let from_val: Address = Address::try_from_val(&s.env, &topics.get(2).unwrap())
+        .expect("topic[2] must be an Address (from)");
+    assert_eq!(from_val, s.creator);
+    // data = net staked amount
+    let amount: i128 = i128::try_from_val(&s.env, &data).expect("data must be i128");
+    assert_eq!(amount, 500);
+}
+
+#[test]
+fn test_vault_funded_token_matches_vault_token() {
+    // Ensure the token emitted in vault_funded is the same as vault.token.
+    let s = setup(&[100, 200], &[300, 700]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    let events = s.env.events().all();
+    // Find the vault_funded event.
+    let funded_event = events.iter().find(|(_, topics, _)| {
+        topics.get(0)
+            .and_then(|v| Symbol::try_from_val(&s.env, &v).ok())
+            .map(|sym| sym == Symbol::new(&s.env, "vault_funded"))
+            .unwrap_or(false)
+    });
+    assert!(funded_event.is_some(), "vault_funded event not found");
+    let (_, topics, data) = funded_event.unwrap();
+    let token_val: Address = Address::try_from_val(&s.env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(token_val, vault.token);
+    let amount: i128 = i128::try_from_val(&s.env, &data).unwrap();
+    assert_eq!(amount, vault.staked);
+}
+
 #[test]
 fn test_milestone_checked_in_emits_symbol_topic() {
     let s = setup(&[100], &[500]);
