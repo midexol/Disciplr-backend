@@ -34,6 +34,7 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('oracle.call', defaultJobHandlers['oracle.call'])
     this.queue.registerHandler('analytics.recompute', defaultJobHandlers['analytics.recompute'])
     this.queue.registerHandler('export.generate', defaultJobHandlers['export.generate'])
+    this.queue.registerHandler('sessions.cleanup', defaultJobHandlers['sessions.cleanup'])
   }
 
   start(): void {
@@ -104,6 +105,10 @@ export class BackgroundJobSystem {
       process.env.ANALYTICS_RECOMPUTE_INTERVAL_MS,
       300_000,
     )
+    const sessionsCleanupIntervalMs = parsePositiveInteger(
+      process.env.SESSIONS_CLEANUP_INTERVAL_MS,
+      86_400_000, // 24 hours
+    )
 
     this.enqueue('deadline.check', {
       triggerSource: 'scheduler',
@@ -116,6 +121,7 @@ export class BackgroundJobSystem {
       },
       { delayMs: 5_000 },
     )
+    this.enqueue('sessions.cleanup', {}, { delayMs: 10_000 })
 
     const deadlineTimer = setInterval(() => {
       this.enqueue('deadline.check', { triggerSource: 'scheduler' })
@@ -128,13 +134,20 @@ export class BackgroundJobSystem {
       })
     }, analyticsIntervalMs)
 
+    const sessionsTimer = setInterval(() => {
+      this.enqueue('sessions.cleanup', {})
+    }, sessionsCleanupIntervalMs)
+
     if (typeof deadlineTimer.unref === 'function') {
       deadlineTimer.unref()
     }
     if (typeof analyticsTimer.unref === 'function') {
       analyticsTimer.unref()
     }
+    if (typeof sessionsTimer.unref === 'function') {
+      sessionsTimer.unref()
+    }
 
-    this.scheduleTimers.push(deadlineTimer, analyticsTimer)
+    this.scheduleTimers.push(deadlineTimer, analyticsTimer, sessionsTimer)
   }
 }
