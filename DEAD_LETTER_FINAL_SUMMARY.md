@@ -2,7 +2,7 @@
 
 **Issue:** Add dead-letter handling and max-attempt drain for the custom job queue  
 **Resolution Date:** May 27, 2026  
-**Status:** ✅ **COMPLETE - PRODUCTION READY**
+**Status:** ✅ * *COMPLETE - PRODUCTION READY**
 
 ---
 
