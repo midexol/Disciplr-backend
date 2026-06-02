@@ -1,39 +1,3 @@
-use soroban_sdk::{contracterror, contractimpl, contracttype, Env, Vec};
-
-#[contracttype]
-#[derive(Clone)]
-pub struct Milestone {
-    pub verified: bool,
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ContractError {
-    TooManyMilestones = 1,
-}
-
-/// Upper bound for `create_vault` milestone count to keep per-call loops bounded.
-pub const MAX_MILESTONES: u32 = 32;
-
-pub struct AccountabilityVaultContract;
-
-#[contractimpl]
-impl AccountabilityVaultContract {
-    pub fn create_vault(_env: Env, milestones: Vec<Milestone>) -> Result<(), ContractError> {
-        if milestones.len() > MAX_MILESTONES {
-            return Err(ContractError::TooManyMilestones);
-        }
-
-        Ok(())
-    }
-
-    pub fn all_verified(_env: Env, milestones: Vec<Milestone>) -> bool {
-        let mut i = 0;
-        while i < milestones.len() {
-            if !milestones.get(i).unwrap().verified {
-                return false;
-            }
-            i += 1;
 #![no_std]
 //! Disciplr Accountability Vault
 //!
@@ -398,9 +362,7 @@ impl AccountabilityVault {
         if vault.status == VaultStatus::Disputed {
             return Err(Error::VaultDisputed);
         }
-        if vault.status != VaultStatus::Active {
-            return Err(Error::NotActive);
-        }
+        Self::assert_active(&vault)?;
         if vault.paused {
             return Err(Error::Paused);
         }
@@ -450,9 +412,7 @@ impl AccountabilityVault {
         if vault.status == VaultStatus::Disputed {
             return Err(Error::VaultDisputed);
         }
-        if vault.status != VaultStatus::Active {
-            return Err(Error::NotActive);
-        }
+        Self::assert_active(&vault)?;
         if vault.paused {
             return Err(Error::Paused);
         }
@@ -611,9 +571,7 @@ impl AccountabilityVault {
         if creator != vault.creator {
             return Err(Error::Unauthorized);
         }
-        if vault.status != VaultStatus::Active {
-            return Err(Error::NotActive);
-        }
+        Self::assert_active(&vault)?;
         if vault.paused {
             return Err(Error::Paused);
         }
@@ -819,6 +777,14 @@ impl AccountabilityVault {
         
         Ok(())
     }
+    /// Asserts that the vault is in the Active state.
+    fn assert_active(vault: &Vault) -> Result<(), Error> {
+        if vault.status != VaultStatus::Active {
+            return Err(Error::NotActive);
+        }
+        Ok(())
+    }
+
     fn load(env: &Env, vault_id: &String) -> Result<Vault, Error> {
         let key = DataKey::Vault(vault_id.clone());
         let vault = env

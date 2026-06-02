@@ -67,3 +67,12 @@ If you need to update this budget as the contract grows:
 (`src/services/horizonListener.ts`) and `src/services/eventParser.ts`
 ingest the events emitted by these functions to keep the off-chain vault state
 in sync.
+
+## Internal Helpers
+
+The contract includes several optimized internal helper functions to guarantee security, modularity, and easy auditability:
+
+| Helper | Purpose |
+|---|---|
+| `assert_active(&Vault)` | Centralizes repeated state validation checks for `Active` vaults in `slash_on_miss`, `claim`, and `withdraw`, making future status lifecycle additions single-point-of-change updates. |
+

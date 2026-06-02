@@ -1,29 +1,3 @@
-use soroban_sdk::{Env, Vec};
-
-use crate::{AccountabilityVaultContract, ContractError, MAX_MILESTONES, Milestone};
-
-#[test]
-fn create_vault_rejects_more_than_max_milestones() {
-    let env = Env::default();
-    let mut milestones = Vec::new(&env);
-    for _ in 0..(MAX_MILESTONES + 1) {
-        milestones.push_back(Milestone { verified: false });
-    }
-
-    let result = AccountabilityVaultContract::create_vault(env.clone(), milestones);
-    assert_eq!(result, Err(ContractError::TooManyMilestones));
-}
-
-#[test]
-fn create_vault_allows_max_milestones() {
-    let env = Env::default();
-    let mut milestones = Vec::new(&env);
-    for _ in 0..MAX_MILESTONES {
-        milestones.push_back(Milestone { verified: false });
-    }
-
-    let result = AccountabilityVaultContract::create_vault(env.clone(), milestones);
-    assert!(result.is_ok());
 #![cfg(test)]
 
 extern crate std;
@@ -727,3 +701,12 @@ fn test_create_vault_failure_destination_equals_creator_fails() {
         &guardian,
     );
 }
+
+#[test]
+#[should_panic(expected = "Error::NotActive")]
+fn test_slash_on_miss_requires_active_vault_fails() {
+    let s = setup(&[100], &[500]);
+    // The vault is in Draft status — slash_on_miss must fail with NotActive.
+    s.contract.slash_on_miss(&s.vault_id);
+}
+
