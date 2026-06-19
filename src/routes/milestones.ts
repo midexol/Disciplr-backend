@@ -15,7 +15,9 @@ import {
   getMilestoneApprovalProgress,
   hasMilestoneMetThreshold,
   DuplicateVerifierVoteError,
+  getVerifierProfile,
 } from '../services/verifiers.js'
+
 import { completeVault } from '../services/vaultTransitions.js'
 import { vaults } from './vaults.js'
 import { getVaultById } from '../services/vaultStore.js'
@@ -161,8 +163,15 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
       return next(AppError.notFound('Milestone not found'))
     }
 
+    // Reject approvals from suspended/deactivated verifiers (historical votes remain intact)
+    const verifier = await getVerifierProfile(verifierUserId)
+    if (verifier && (verifier.status === 'suspended' || verifier.status === 'deactivated')) {
+      return next(AppError.forbidden('Suspended/deactivated verifier cannot cast milestone approvals'))
+    }
+
     // Check if verifier has already voted (duplicate vote prevention)
     const hasVoted = await hasVerifierVoted(id, verifierUserId)
+
     if (hasVoted) {
       return next(AppError.conflict('Verifier has already voted on this milestone'))
     }
