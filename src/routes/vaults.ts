@@ -5,7 +5,7 @@ import { ApiScope } from '../types/auth.js'
 import { UserRole } from '../types/user.js'
 import { VaultService } from '../services/vault.service.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
-import { updateAnalyticsSummary } from '../db/database.js'
+import { updateAnalyticsSummary } from '../services/analytics.service.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import {
   getIdempotentResponse,
@@ -14,7 +14,7 @@ import {
   IdempotencyConflictError,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
-import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById } from '../services/vaultStore.js'
+import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
 import { createVaultSchema, flattenZodErrors, isValidStellarAddress } from '../services/vaultValidation.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { queryParser } from '../middleware/queryParser.js'
