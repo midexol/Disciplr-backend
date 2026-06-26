@@ -36,6 +36,11 @@ export class WebhookSubscriberRepository {
     return rows.map(toSubscriber)
   }
 
+  async findById(id: string): Promise<WebhookSubscriber | null> {
+    const row = await this.db<SubscriberRow>('webhook_subscribers').where({ id }).first()
+    return row ? toSubscriber(row) : null
+  }
+
   async findByEvent(organizationId: string, eventType: string): Promise<WebhookSubscriber[]> {
     const rows = await this.db<SubscriberRow>('webhook_subscribers')
       .where({ organization_id: organizationId, active: true })

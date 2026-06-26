@@ -1,5 +1,5 @@
-import { createHmac, timingSafeEqual } from 'node:crypto'
-import { db } from '../db/knex.js'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { isIP } from 'node:net'
 import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRepository.js'
 import { retryWithBackoff } from '../utils/retry.js'
 import { db } from '../db/index.js'
@@ -79,18 +79,34 @@ export const isUrlAllowed = (
   }
 
   // Strip brackets from IPv6 addresses — Node >= 25 includes them in hostname.
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
+  const ipv6MappedMatch = hostname.match(/^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f:]+))$/i)
+  const normalizedIpv4 = ipv6MappedMatch
+    ? (ipv6MappedMatch[1] ?? ipv6MappedMatch[2]
+        .split(':')
+        .flatMap((part) => {
+          const value = Number.parseInt(part || '0', 16)
+          return [String((value >> 8) & 255), String(value & 255)]
+        })
+        .slice(-4)
+        .join('.'))
+    : hostname
 
   // Block loopback and common private ranges (SSRF mitigation)
   if (
     hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
+    hostname.endsWith('.localhost') ||
+    normalizedIpv4 === '127.0.0.1' ||
     hostname === '::1' ||
-    /^10\./.test(hostname) ||
-    /^192\.168\./.test(hostname) ||
-    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname) ||
-    /^169\.254\./.test(hostname)
+    /^10\./.test(normalizedIpv4) ||
+    /^192\.168\./.test(normalizedIpv4) ||
+    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(normalizedIpv4) ||
+    /^169\.254\./.test(normalizedIpv4)
   ) {
+    return false
+  }
+
+  if (isIP(hostname) === 0 && /(?:^|\.)localtest\.me$/.test(hostname)) {
     return false
   }
 
@@ -158,6 +174,7 @@ const deliverOnce = async (
   try {
     const response = await fetch(subscriber.url, {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         'content-type': 'application/json',
         'x-disciplr-signature': signature,
@@ -168,6 +185,11 @@ const deliverOnce = async (
       body,
       signal: controller.signal,
     })
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      throw new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
+    }
 
     if (response.status >= 400) {
       throw new Error(`HTTP ${response.status}`)
@@ -262,7 +284,7 @@ export const replayDeadLetter = async (
     return { replayed: false, error: 'Dead letter not found or already replayed' }
   }
 
-  const subscriber = subscribers.get(row.subscriber_id)
+  const subscriber = await repo.findById(row.subscriber_id)
   if (!subscriber) {
     return { replayed: false, error: 'Subscriber not registered' }
   }
