@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { db } from '../db/knex.js'
 
 /**
@@ -63,21 +64,132 @@ class FeatureFlagCache {
 
 const cache = new FeatureFlagCache()
 
+export type FeatureFlagContext = Record<string, string | number | boolean | null | undefined>
+
+export interface FeatureFlagRule {
+  attribute: string
+  operator?: 'eq' | 'neq' | 'in' | 'not_in'
+  value?: string | number | boolean | null
+  values?: Array<string | number | boolean | null>
+  enabled?: boolean
+}
+
+interface FeatureFlagRow {
+  name: string
+  org_id: string | null
+  enabled: boolean
+  rollout_percentage?: number | string | null
+  rules?: string | FeatureFlagRule[] | null
+}
+
 /**
  * Generate cache key from flag name and organization ID
  * Format: "flag_name:org_id" or "flag_name:global" for org_id null
  */
-function getCacheKey(name: string, orgId: string | null): string {
-  return `${name}:${orgId || 'global'}`
+function getCacheKey(name: string, orgId: string | null, context?: FeatureFlagContext): string {
+  const contextKey = context
+    ? Object.keys(context)
+        .sort()
+        .map((key) => `${key}=${String(context[key])}`)
+        .join('&')
+    : ''
+  return `${name}:${orgId || 'global'}:${contextKey}`
+}
+
+function coerceBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === '1'
+}
+
+function parseRules(value: FeatureFlagRow['rules']): FeatureFlagRule[] {
+  if (!value) {
+    return []
+  }
+
+  if (Array.isArray(value)) {
+    return value
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function getRolloutPercentage(value: FeatureFlagRow['rollout_percentage']): number | null {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  const percentage = Number(value)
+  if (!Number.isFinite(percentage)) {
+    return null
+  }
+
+  return Math.min(100, Math.max(0, percentage))
+}
+
+export function getFeatureFlagBucket(name: string, orgId: string): number {
+  const digest = createHash('sha256').update(`${name}:${orgId}`).digest()
+  const bucket = digest.readUInt32BE(0) / 0x100000000
+  return Math.floor(bucket * 100)
+}
+
+export function matchesFeatureFlagRule(
+  rule: FeatureFlagRule,
+  context: FeatureFlagContext = {},
+): boolean {
+  const actual = context[rule.attribute]
+  const operator = rule.operator ?? 'eq'
+  const values = rule.values ?? (Object.prototype.hasOwnProperty.call(rule, 'value') ? [rule.value] : [])
+
+  switch (operator) {
+    case 'eq':
+      return actual === rule.value
+    case 'neq':
+      return actual !== rule.value
+    case 'in':
+      return values.includes(actual as any)
+    case 'not_in':
+      return !values.includes(actual as any)
+    default:
+      return false
+  }
+}
+
+function evaluateTargetedFlag(
+  row: FeatureFlagRow | undefined,
+  name: string,
+  orgId: string | null,
+  context: FeatureFlagContext = {},
+): boolean {
+  if (!row) {
+    return false
+  }
+
+  for (const rule of parseRules(row.rules)) {
+    if (matchesFeatureFlagRule(rule, context)) {
+      return rule.enabled ?? true
+    }
+  }
+
+  const rolloutPercentage = getRolloutPercentage(row.rollout_percentage)
+  if (orgId && rolloutPercentage !== null) {
+    return getFeatureFlagBucket(name, orgId) < rolloutPercentage
+  }
+
+  return coerceBoolean(row.enabled)
 }
 
 /**
  * Get feature flag value for an organization with fallback to global setting
  *
- * Lookup order:
- * 1. Organization-specific override (if orgId provided and exists)
- * 2. Global default (org_id = null)
- * 3. Return false if flag doesn't exist
+ * Precedence:
+ * 1. Organization-specific row is an explicit allow/deny override.
+ * 2. Global attribute rules, in stored order, override percentage rollout.
+ * 3. Global rollout_percentage uses a stable hash of (flagKey, orgId).
+ * 4. Global enabled is the fallback default.
  *
  * Results are cached per-process with 5-minute TTL to balance
  * freshness vs performance.
@@ -92,20 +204,25 @@ function getCacheKey(name: string, orgId: string | null): string {
  *   // Check global default for a flag
  *   const globalEnabled = await getFlag(FeatureFlag.MULTI_VERIFIER_ENABLED, null)
  */
-export async function getFlag(name: string, orgId: string | null): Promise<boolean> {
+export async function getFlag(
+  name: string,
+  orgId: string | null,
+  context: FeatureFlagContext = {},
+): Promise<boolean> {
   // Try organization-specific flag first (if orgId provided)
   if (orgId) {
-    const cacheKey = getCacheKey(name, orgId)
+    const cacheKey = getCacheKey(name, orgId, context)
     const cached = cache.get(cacheKey)
     if (cached !== null) {
       return cached
     }
 
     try {
-      const row = await db('feature_flags').where({ name, org_id: orgId }).first()
+      const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
       if (row) {
-        cache.set(cacheKey, row.enabled)
-        return row.enabled
+        const value = coerceBoolean(row.enabled)
+        cache.set(cacheKey, value)
+        return value
       }
     } catch (error) {
       console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
@@ -113,15 +230,15 @@ export async function getFlag(name: string, orgId: string | null): Promise<boole
   }
 
   // Fall back to global default (org_id = null)
-  const globalCacheKey = getCacheKey(name, null)
+  const globalCacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
   const globalCached = cache.get(globalCacheKey)
   if (globalCached !== null) {
     return globalCached
   }
 
   try {
-    const row = await db('feature_flags').where({ name, org_id: null }).first()
-    const value = row?.enabled ?? false
+    const row = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
+    const value = evaluateTargetedFlag(row, name, orgId, context)
     cache.set(globalCacheKey, value)
     return value
   } catch (error) {
@@ -162,9 +279,8 @@ export async function setFlag(
       })
     }
 
-    // Invalidate cache for this flag to ensure freshness
-    const cacheKey = getCacheKey(name, orgId)
-    cache.invalidate(cacheKey)
+    // Invalidate cached global rollout and org-specific decisions for this process.
+    cache.invalidateAll()
 
     return enabled
   } catch (error) {
