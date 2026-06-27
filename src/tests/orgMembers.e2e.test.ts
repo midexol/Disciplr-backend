@@ -159,24 +159,23 @@ jest.unstable_mockModule('../middleware/auth.js', async () => ({ authenticate: m
 
 // Imports that pull in the mocked modules must happen after the mocks above.
 const { orgMembersRouter } = await import('../routes/orgMembers.js')
-const { requireOrgAccess } = await import('../middleware/orgAuth.js')
 const { errorHandler } = await import('../middleware/errorHandler.js')
 
-// ── Test app: real router + real org-access middleware on a scoped vault route ─
-let testVaults: Array<{ id: string; orgId: string }> = []
-
+// ── Test app: just the real router (which carries its own auth + org-access) ───
+// Scoped access is verified through the router's real `GET /:orgId/members`
+// route — itself guarded by `requireOrgAccess` — so the test never defines its
+// own authorization endpoint.
 const app = express()
 app.use(express.json())
 app.use('/api/organizations', orgMembersRouter)
-app.get(
-  '/api/organizations/:orgId/vaults',
-  mockAuthenticate,
-  requireOrgAccess('owner', 'admin', 'member'),
-  (req, res) => {
-    res.json({ data: testVaults.filter((v) => v.orgId === req.params.orgId) })
-  },
-)
 app.use(errorHandler)
+
+// Reads an org's member roster as `userId`; this is the org-scoped resource the
+// real `requireOrgAccess` middleware gates.
+const readRoster = (orgId: string, userId: string, role = 'member') =>
+  request(app)
+    .get(`/api/organizations/${orgId}/members`)
+    .set('Authorization', bearer(userId, role))
 
 const bearer = (userId: string, role = 'member') =>
   `Bearer ${jwt.sign({ userId, role, sub: userId }, JWT_SECRET, { expiresIn: '1h' })}`
@@ -194,18 +193,12 @@ beforeEach(() => {
     { orgId: ORG_ALPHA, userId: 'alice', role: 'owner' },
     { orgId: ORG_BETA, userId: 'dave', role: 'owner' },
   ])
-  testVaults = [
-    { id: 'va-1', orgId: ORG_ALPHA },
-    { id: 'va-2', orgId: ORG_ALPHA },
-    { id: 'vb-1', orgId: ORG_BETA },
-  ]
 })
 
 afterEach(() => {
   invitations.length = 0
   setOrganizations([])
   setOrgMembers([])
-  testVaults = []
   jest.clearAllMocks()
 })
 
@@ -222,10 +215,8 @@ async function inviteToAlpha(email = 'erin@example.com'): Promise<string> {
 
 describe('Org-member invitation acceptance — end to end (issue #668)', () => {
   it('walks invite → accept → scoped member → org-scoped resource access', async () => {
-    // Before acceptance, the invitee is not a member and cannot read vaults.
-    const before = await request(app)
-      .get(`/api/organizations/${ORG_ALPHA}/vaults`)
-      .set('Authorization', bearer('erin'))
+    // Before acceptance, the invitee is not a member and is denied org access.
+    const before = await readRoster(ORG_ALPHA, 'erin')
     expect(before.status).toBe(403)
 
     // 1. Admin invites; 2. invitee accepts with the raw token.
@@ -238,21 +229,15 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
 
     // 3. The new member is recorded with the expected role…
     expect(getMemberRole(ORG_ALPHA, 'erin')).toBe('member')
-    const roster = await request(app)
-      .get(`/api/organizations/${ORG_ALPHA}/members`)
-      .set('Authorization', bearer('erin'))
+
+    // 4. …and can now read that org's scoped resource (its member roster),
+    //    seeing itself listed with the expected role.
+    const roster = await readRoster(ORG_ALPHA, 'erin')
     expect(roster.status).toBe(200)
     expect(roster.body.members.find((m: any) => m.user_id === 'erin')).toMatchObject({
       organization_id: ORG_ALPHA,
       role: 'member',
     })
-
-    // 4. …and can now read that org's vaults.
-    const own = await request(app)
-      .get(`/api/organizations/${ORG_ALPHA}/vaults`)
-      .set('Authorization', bearer('erin'))
-    expect(own.status).toBe(200)
-    expect(own.body.data.map((v: any) => v.id).sort()).toEqual(['va-1', 'va-2'])
   })
 
   it('confines the newly accepted member to their org (cross-tenant isolation)', async () => {
@@ -262,9 +247,8 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
       .send({ token, userId: 'erin', role: 'member' })
       .expect(200)
 
-    const crossOrg = await request(app)
-      .get(`/api/organizations/${ORG_BETA}/vaults`)
-      .set('Authorization', bearer('erin'))
+    // Accepted into Alpha only — Beta's roster must stay off-limits.
+    const crossOrg = await readRoster(ORG_BETA, 'erin')
     expect(crossOrg.status).toBe(403)
     expect(crossOrg.body.error).toMatch(/not a member/i)
   })
