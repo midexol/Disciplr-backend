@@ -328,3 +328,129 @@ When `onChain.mode` is `"submit"`, the backend polls `getTransaction` after send
 ### SorobanTimeoutError
 
 Thrown when the deadline is exceeded. Carries `txHash`, `elapsedMs`, `code: "SOROBAN_TIMEOUT"`, `status: 504`. Surfaced in the submission response as `status: "error"`.
+
+
+---
+
+## Org-Scoped Vault Search
+
+`GET /api/orgs/:orgId/vaults/search`
+
+Search an organization's vaults using full-text matching and structured filters.
+Results are cursor-paginated for stable, consistent paging across large result sets.
+
+### Authentication & Authorization
+
+Requires a valid JWT in the `Authorization: Bearer <token>` header.
+The caller must be a member of the target organization (role: `owner`, `admin`, or `member`).
+
+### Path Parameters
+
+| Parameter | Type   | Description                      |
+|-----------|--------|----------------------------------|
+| `orgId`   | string | UUID of the organization to search |
+
+### Query Parameters
+
+| Parameter    | Type   | Required | Description |
+|--------------|--------|----------|-------------|
+| `q`          | string | No       | Full-text search term. Matches the `creator` and `verifier` fields via a PostgreSQL GIN/tsvector index. Falls back to `ILIKE` if the FTS column is unavailable. Max 200 characters after sanitization. |
+| `status`     | string | No       | Exact status filter. Accepted values: `draft`, `active`, `completed`, `failed`, `cancelled`. |
+| `verifier`   | string | No       | Exact verifier Stellar address match. |
+| `amount_min` | string | No       | Minimum vault amount (inclusive). |
+| `amount_max` | string | No       | Maximum vault amount (inclusive). |
+| `date_from`  | string | No       | Minimum `created_at` timestamp (ISO 8601, inclusive). |
+| `date_to`    | string | No       | Maximum `created_at` timestamp (ISO 8601, inclusive). |
+| `cursor`     | string | No       | Opaque cursor from the previous page's `next_cursor` field. |
+| `limit`      | number | No       | Page size. Range: 1–100. Default: 20. |
+
+### Response
+
+```json
+{
+  "data": [
+    {
+      "id": "vault-uuid",
+      "creator": "GCREATOR...",
+      "verifier": "GVERIFIER...",
+      "amount": "1000",
+      "status": "active",
+      "organization_id": "org-uuid",
+      "start_date": "2025-01-01T00:00:00.000Z",
+      "end_date": "2025-12-31T00:00:00.000Z",
+      "created_at": "2025-03-01T12:00:00.000Z",
+      "updated_at": "2025-03-01T12:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "limit": 20,
+    "cursor": "<current-cursor-or-null>",
+    "next_cursor": "<opaque-base64url-string>",
+    "has_more": true,
+    "count": 20
+  }
+}
+```
+
+When `has_more` is `false`, `next_cursor` is absent.
+
+### Cursor Pagination
+
+Results are sorted `created_at DESC, id DESC` for stability. To page through results:
+
+1. Make the initial request without a `cursor`.
+2. If `pagination.has_more` is `true`, pass `pagination.next_cursor` as the `cursor` query parameter in the next request.
+3. Repeat until `has_more` is `false`.
+
+Cursors encode a `(created_at, id)` tuple and are opaque base64url strings. Do not construct or parse them — treat them as black boxes.
+
+### Full-Text Search Index
+
+The `q` parameter is backed by a PostgreSQL GIN index on a `tsvector` column (`search_vector`) covering `creator` and `verifier`. The column is maintained by a database trigger (`trg_vaults_search_vector`) that runs `BEFORE INSERT OR UPDATE` on those columns.
+
+Migration: `db/migrations/20260627000000_add_vault_fts_index.cjs`
+
+Prefix-match semantics (`term:*`) are used so partial terms (e.g. `q=alice`) still match.
+
+### Error Responses
+
+| Status | Condition |
+|--------|-----------|
+| 400    | `cursor` value is not a valid opaque cursor. Body: `{ "error": "Invalid cursor" }` |
+| 401    | Missing or invalid Authorization token. |
+| 403    | Caller is not a member of the specified organization. |
+| 404    | Organization does not exist. |
+| 500    | Unexpected server error. |
+
+### Security Notes
+
+- **Tenant isolation**: Every query is scoped by `WHERE organization_id = :orgId`. This filter runs inside the database engine and cannot be bypassed by client-supplied parameters.
+- **Soft-delete awareness**: Vaults with `deleted_at IS NOT NULL` are excluded automatically.
+- **Injection safety**: The `q` parameter is sanitised (only word characters, spaces, dots, hyphens and underscores allowed) before being interpolated into a tsquery. All remaining parameters are applied through Knex's parameterized query API — no string concatenation.
+- **Rate limiting**: The endpoint shares the organization read rate limiter (`orgReadRateLimiter`), configurable via `ORG_RATE_LIMIT_MAX` / `ORG_RATE_LIMIT_WINDOW_MS`.
+
+### Examples
+
+**Search by text:**
+```
+GET /api/orgs/org-uuid/vaults/search?q=alice
+```
+
+**Filter by status and capital range:**
+```
+GET /api/orgs/org-uuid/vaults/search?status=active&amount_min=500&amount_max=5000
+```
+
+**Combined text + date range:**
+```
+GET /api/orgs/org-uuid/vaults/search?q=bob&date_from=2025-01-01T00:00:00Z&date_to=2025-06-30T23:59:59Z
+```
+
+**Paginate through results:**
+```
+# Page 1
+GET /api/orgs/org-uuid/vaults/search?limit=10
+
+# Page 2 (using next_cursor from page 1 response)
+GET /api/orgs/org-uuid/vaults/search?limit=10&cursor=eyJ0aW1lc3RhbXAiO...
+```
