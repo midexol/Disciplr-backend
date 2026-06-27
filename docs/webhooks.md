@@ -31,9 +31,50 @@ Subscribers are stored in-memory (same pattern as API keys). Each subscriber has
 | `x-disciplr-event-id` | Originating event ID in `{txHash}:{eventIndex}` format |
 | `x-disciplr-delivery-timestamp` | ISO 8601 timestamp |
 
+## Circuit Breaker
+
+Each subscriber has an associated circuit breaker that isolates chronically failing endpoints so healthy deliveries are not delayed.
+
+### States
+
+| State | Behavior |
+|-------|----------|
+| **CLOSED** | Normal operation. Delivery proceeds. Failures increment a counter. |
+| **OPEN** | All deliveries are short-circuited directly to the dead-letter queue. No HTTP requests are made. |
+| **HALF_OPEN** | Exactly one probe request is allowed. Success transitions back to CLOSED; failure transitions to OPEN. |
+
+### State Machine
+
+```
+CLOSED → (failure count ≥ threshold) → OPEN → (timeout elapses) → HALF_OPEN → (probe succeeds) → CLOSED
+                                                                      → (probe fails) → OPEN
+```
+
+### Configuration
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `WEBHOOK_CIRCUIT_BREAKER_THRESHOLD` | `5` | Consecutive failures within the window needed to trip to OPEN |
+| `WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS` | `60_000` | Sliding window (ms) for counting failures |
+| `WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS` | `30_000` | Time (ms) before an OPEN breaker transitions to HALF_OPEN for a probe |
+
+### Persistence
+
+Breaker state is persisted in the `webhook_breaker_states` table and survives restarts. An in-memory cache is used at runtime; the cache is invalidated only on restart or via `resetBreakerCache()` (test helper).
+
+### Metrics
+
+Breaker state counts are exposed as Prometheus gauges at `/api/metrics`:
+
+| Metric | Description |
+|--------|-------------|
+| `disciplr_webhook_breaker_closed` | Subscribers in CLOSED state |
+| `disciplr_webhook_breaker_open` | Subscribers in OPEN state |
+| `disciplr_webhook_breaker_half_open` | Subscribers in HALF_OPEN state |
+
 ## Dead-Letter Queue
 
-When a delivery permanently fails (exhausts retries), the failed delivery is persisted to the `webhook_dead_letters` table for later inspection and replay.
+When a delivery permanently fails (exhausts retries) or is short-circuited by an open breaker, the failed delivery is persisted to the `webhook_dead_letters` table for later inspection and replay.
 
 ### Schema
 

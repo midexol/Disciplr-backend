@@ -50,6 +50,11 @@ jest.unstable_mockModule('../repositories/webhookSubscriberRepository.js', () =>
       }
       return false
     }),
+    getBreakerState: jest.fn(async () => null),
+    upsertBreakerState: jest.fn(async () => {}),
+    tryTransitionToHalfOpen: jest.fn(async () => false),
+    removeBreakerState: jest.fn(async () => true),
+    getAllBreakerStates: jest.fn(async () => []),
   })),
 }))
 
