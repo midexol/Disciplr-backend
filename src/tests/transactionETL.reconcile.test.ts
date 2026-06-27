@@ -8,8 +8,10 @@ import db from '../db/index.js'
 
 const stellar = (): string => `G${'A'.repeat(55)}`
 
+let vaultCounter = 0
+
 const makeVault = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-  id: `vault-${crypto.randomUUID()}`,
+  id: `vault-test-${++vaultCounter}`,
   status: 'active',
   amount: '1000',
   verifier: stellar(),
@@ -19,7 +21,7 @@ const makeVault = (overrides: Record<string, unknown> = {}): Record<string, unkn
 })
 
 const makeOnChainVault = (overrides: Partial<OnChainVaultState> = {}): OnChainVaultState => ({
-  vault_id: `vault-${crypto.randomUUID()}`,
+  vault_id: `vault-test-${++vaultCounter}`,
   amount: '1000',
   verifier: stellar(),
   success_destination: stellar(),
@@ -89,6 +91,7 @@ describe('TransactionETLService - vault reconciliation', () => {
   let etlService: TransactionETLService
 
   beforeEach(() => {
+    vaultCounter = 0
     clearSorobanEnv()
     resetSorobanClient()
     jest.clearAllMocks()
