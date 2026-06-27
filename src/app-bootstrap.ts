@@ -30,26 +30,30 @@ import { withRequestPrisma } from './middleware/withRequestPrisma.js'
 import {
   securityMetricsMiddleware,
   securityRateLimitMiddleware,
-} from './security/abuse-monitor.js'
-import inFlightMiddleware from './middleware/inFlightRequests.js'
+} from "./security/abuse-monitor.js";
+import inFlightMiddleware from "./middleware/inFlightRequests.js";
 
 type BootstrapOptions = {
-  notificationService?: NotificationService
-  notificationProviderName?: string
-}
+  notificationService?: NotificationService;
+  notificationProviderName?: string;
+};
 
 export function bootstrapApp(options: BootstrapOptions = {}) {
   const notificationService =
     options.notificationService ??
-    createNotificationService(options.notificationProviderName ?? process.env.NOTIFICATION_PROVIDER ?? 'console')
-  const jobSystem = new BackgroundJobSystem(notificationService)
-  configureExportJobRepository(createKnexExportJobRepository(db))
+    createNotificationService(
+      options.notificationProviderName ??
+        process.env.NOTIFICATION_PROVIDER ??
+        "console",
+    );
+  const jobSystem = new BackgroundJobSystem(notificationService);
+  configureExportJobRepository(createKnexExportJobRepository(db));
 
-  app.use(securityMetricsMiddleware)
-  app.use(securityRateLimitMiddleware)
+  app.use(securityMetricsMiddleware);
+  app.use(securityRateLimitMiddleware);
   // Track in-flight requests for graceful shutdown
-  app.use(inFlightMiddleware)
-  app.use(withRequestPrisma)
+  app.use(inFlightMiddleware);
+  app.use(withRequestPrisma);
 
   app.use('/api/health', healthRateLimiter, createHealthRouter(jobSystem, privacyAbuseMonitor))
   app.use('/api/jobs', createJobsRouter(jobSystem))
@@ -74,8 +78,8 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/webhooks', webhooksRouter)
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
-  app.use(notFound)
-  app.use(errorHandler)
+  app.use(notFound);
+  app.use(errorHandler);
 
-  return { app, jobSystem }
+  return { app, jobSystem };
 }
