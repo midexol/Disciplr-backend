@@ -18,13 +18,19 @@ const logJob = (type: JobType, message: string): void => {
   console.log(`[jobs:${type}] ${message}`)
 }
 
-export const defaultJobHandlers: JobHandlerRegistry = {
+export interface EmbeddingReindexDependencies {
+  source: MilestoneEmbeddingSource
+  cursorStore: ReindexCursorStore
+  embeddingProvider: EmbeddingProvider
+}
+
+export const createDefaultJobHandlers = (
+  notificationService: NotificationService,
+  embeddingReindex: EmbeddingReindexDependencies,
+): JobHandlerRegistry => ({
   'notification.send': async (payload, context) => {
-    await NotificationService.send(payload.recipient, payload.subject, payload.body)
-    logJob(
-      'notification.send',
-      `executed job_id=${context.jobId} attempt=${context.attempt}`,
-    )
+    await notificationService.send(payload.recipient, payload.subject, payload.body)
+    logJob('notification.send', `executed job_id=${context.jobId} attempt=${context.attempt}`)
   },
   'deadline.check': async (payload, context) => {
     await sleep(30)
@@ -34,6 +40,23 @@ export const defaultJobHandlers: JobHandlerRegistry = {
     logJob(
       'deadline.check',
       `checked target=${target} deadline=${deadline} expired=${expiredCount} source=${payload.triggerSource} attempt=${context.attempt}`,
+    )
+    if (payload.vaultId) {
+      const sorobanPayload = buildSlashOnMissPayload(payload.vaultId)
+      logJob(
+        'deadline.check',
+        `slash_on_miss built vault=${payload.vaultId} status=${sorobanPayload.submission.status}`,
+      )
+    }
+  },
+  'milestone.reminders': async (payload, context) => {
+    const remindersSent = await sendMilestoneReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders',
+      `sent ${remindersSent} reminders attempt=${context.attempt}`,
     )
   },
   'oracle.call': async (payload, context) => {
@@ -60,7 +83,7 @@ export const defaultJobHandlers: JobHandlerRegistry = {
       `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
     )
   },
-  'vault.reconcile': async (payload, context) => {
+`  'vault.reconcile': async (payload, context) => {
     const etlConfig = {
       horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
       networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
@@ -78,3 +101,33 @@ export const defaultJobHandlers: JobHandlerRegistry = {
     )
   },
 }
+  'sessions.cleanup': async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const deleted = await cleanupExpiredSessions(batchSize)
+    logJob(
+      'sessions.cleanup',
+      `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
+    )
+  },
+  'outbox.relay': async (payload, context) => {
+    const count = await relayOutboxBatch()
+    logJob(
+      'outbox.relay',
+      `relayed=${count} attempt=${context.attempt}`,
+    )
+  },
+  'embeddings.reindex': async (payload, context) => {
+    const result = await runReindexBatches({
+      source: embeddingReindex.source,
+      cursorStore: embeddingReindex.cursorStore,
+      embeddingProvider: embeddingReindex.embeddingProvider,
+      batchSize: payload.batchSize,
+      maxBatchesPerRun: payload.maxBatchesPerRun,
+    })
+    logJob(
+      'embeddings.reindex',
+      `batches=${result.batches} processed=${result.processed} reindexed=${result.reindexed} ` +
+        `skipped=${result.skippedUpToDate} cursor=${result.cursor ?? 'none'} done=${result.done} attempt=${context.attempt}`,
+    )
+  },
+})

@@ -1,6 +1,7 @@
 export const JOB_TYPES = [
   'notification.send',
   'deadline.check',
+  'milestone.reminders',
   'oracle.call',
   'analytics.recompute',
   'export.generate',
@@ -18,7 +19,12 @@ export interface NotificationJobPayload {
 export interface DeadlineCheckJobPayload {
   vaultId?: string
   deadlineIso?: string
-  triggerSource: 'manual' | 'scheduler'
+  triggerSource: 'manual' | 'scheduler' | 'expiration-scheduler'
+}
+
+export interface MilestoneRemindersJobPayload {
+  leadTimesMs?: number[]
+  limit?: number
 }
 
 export interface OracleCallJobPayload {
@@ -45,6 +51,7 @@ export interface VaultReconcileJobPayload {
 export interface JobPayloadByType {
   'notification.send': NotificationJobPayload
   'deadline.check': DeadlineCheckJobPayload
+  'milestone.reminders': MilestoneRemindersJobPayload
   'oracle.call': OracleCallJobPayload
   'analytics.recompute': AnalyticsRecomputeJobPayload
   'export.generate': ExportGenerateJobPayload
@@ -103,9 +110,14 @@ export const isPayloadForJobType = (
       )
     case 'deadline.check':
       return (
-        (payload.triggerSource === 'manual' || payload.triggerSource === 'scheduler') &&
+        (payload.triggerSource === 'manual' || payload.triggerSource === 'scheduler' || payload.triggerSource === 'expiration-scheduler') &&
         isOptionalString(payload.vaultId) &&
         isOptionalString(payload.deadlineIso)
+      )
+    case 'milestone.reminders':
+      return (
+        (payload.leadTimesMs === undefined || Array.isArray(payload.leadTimesMs)) &&
+        (payload.limit === undefined || typeof payload.limit === 'number')
       )
     case 'oracle.call':
       return (
@@ -125,6 +137,15 @@ export const isPayloadForJobType = (
       return (
         (payload.vaultIds === undefined || Array.isArray(payload.vaultIds)) &&
         (payload.batchSize === undefined || typeof payload.batchSize === 'number')
+    case 'sessions.cleanup':
+      return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
+    case 'outbox.relay':
+      return true
+    case 'embeddings.reindex':
+      return (
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)) &&
+        (payload.maxBatchesPerRun === undefined ||
+          (typeof payload.maxBatchesPerRun === 'number' && payload.maxBatchesPerRun > 0))
       )
     default:
       return false

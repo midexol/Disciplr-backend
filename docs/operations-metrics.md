@@ -10,6 +10,50 @@ The Admin DB Metrics endpoint provides real-time database pool health monitoring
 **Rate Limit:** 20 requests per minute per admin user/IP  
 **Response Time:** < 100ms
 
+## Prometheus Scraper Authentication
+
+The Prometheus metrics endpoint at `GET /api/metrics` is protected by a dedicated access guard (`src/middleware/metricsAuth.ts`) independent of the JWT-based auth used elsewhere.
+
+### Access methods (either is sufficient)
+
+1. **Bearer token** — set `METRICS_TOKEN` env var; scraper sends `Authorization: Bearer <token>`
+2. **IP allowlist** — set `METRICS_ALLOWLIST` env var as a comma-separated list of IPs or CIDR ranges (e.g. `10.0.0.0/8,192.168.1.1`)
+
+If neither is configured the endpoint denies all requests (fail-closed).
+
+### Localhost sidecar
+
+Add `127.0.0.1` to `METRICS_ALLOWLIST`:
+
+```
+METRICS_ALLOWLIST=127.0.0.1
+```
+
+### Audit trail
+
+Every scrape attempt is logged as a structured JSON line (rate-limited to ≤1 entry per IP per 60 s):
+
+```
+{"level":"info","event":"metrics.scrape","ip":"10.0.0.1","allowed":true,"reason":"valid_token","timestamp":"..."}
+{"level":"info","event":"metrics.scrape_denied","ip":"10.0.0.1","allowed":false,"reason":"invalid_token","timestamp":"..."}
+```
+
+### Prometheus scrape config example
+
+```yaml
+scrape_configs:
+  - job_name: 'disciplr'
+    metrics_path: /api/metrics
+    static_configs:
+      - targets: ['app:3000']
+    authorization:
+      credentials: '<METRICS_TOKEN>'
+```
+
+### Gauge label hygiene
+
+All emitted gauges carry only aggregate dimensions — no tenant, organisation, or user-identifying labels are present. This prevents leaking per-tenant queue depths or request volumes through the metrics endpoint.
+
 ## Security & Compliance
 
 ### 1. Authorization & Access Control

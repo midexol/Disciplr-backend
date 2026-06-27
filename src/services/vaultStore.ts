@@ -75,6 +75,7 @@ const mapVaultRow = (row: {
   creator: string | null;
   status: PersistedVault["status"];
   created_at: string;
+  late_check_in_window_secs?: number | null;
 }): Omit<PersistedVault, "milestones"> => ({
   id: row.id,
   amount: row.amount,
@@ -86,6 +87,7 @@ const mapVaultRow = (row: {
   creator: row.creator,
   status: row.status,
   createdAt: row.created_at,
+  lateCheckInWindowSecs: row.late_check_in_window_secs ?? 0,
 });
 
 export const createVaultWithMilestones = async (
@@ -125,6 +127,7 @@ export const createVaultWithMilestones = async (
       status: "draft",
       createdAt: now,
       milestones,
+      lateCheckInWindowSecs: input.lateCheckInWindowSecs ?? 0,
     };
     memoryVaults.push(vault);
     memoryVaultRevisions.set(vault.id, 0);
@@ -147,11 +150,12 @@ export const createVaultWithMilestones = async (
       creator: string | null;
       status: PersistedVault["status"];
       created_at: string;
+      late_check_in_window_secs: number | null;
     }>(
       `INSERT INTO vaults
-        (id, amount, start_date, end_date, verifier, success_destination, failure_destination, creator, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft')
-        RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at`,
+        (id, amount, start_date, end_date, verifier, success_destination, failure_destination, creator, status, late_check_in_window_secs)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9)
+        RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs`,
       [
         vaultId,
         input.amount,
@@ -161,6 +165,7 @@ export const createVaultWithMilestones = async (
         input.destinations.success,
         input.destinations.failure,
         input.creator ?? null,
+        input.lateCheckInWindowSecs ?? 0,
       ],
     );
 
@@ -224,8 +229,9 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     creator: string | null;
     status: PersistedVault["status"];
     created_at: string;
+    late_check_in_window_secs: number | null;
   }>(
-    "SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at FROM vaults ORDER BY created_at DESC",
+    "SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs FROM vaults ORDER BY created_at DESC",
   );
 
   const milestoneRows = await pool.query<{
@@ -273,6 +279,7 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     creator: string | null;
     status: PersistedVault["status"];
     created_at: string;
+    late_check_in_window_secs: number | null;
   }> = vaultRows.rows;
 
   return rows.map((row) => ({
@@ -342,7 +349,7 @@ export const updateVaultById = async (
     UPDATE vaults
     SET ${setParts.join(", ")}
     WHERE id = $1 AND xmin::text = $2
-    RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at
+    RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs
   `;
   const result = await executor.query(query, [id, revision, ...values]);
 
@@ -418,6 +425,26 @@ export const getVaultRevisionById = async (
   }
 
   return result.rows[0].revision;
+};
+
+/**
+ * Computes a weak ETag for a vault based on its revision.
+ * The ETag is derived from the optimistic-concurrency version column (PostgreSQL xmin or memory counter).
+ * Weak ETags are used because vault representations may be transformed during transmission.
+ *
+ * @param id - Vault ID
+ * @returns Weak ETag string in format W/"-<version>" or null if vault not found
+ * @example
+ *   getVaultETag('vault-123') // Returns: W/"-456789" (where 456789 is the xmin value)
+ */
+export const getVaultETag = async (id: string): Promise<string | null> => {
+  const revision = await getVaultRevisionById(id);
+  if (!revision) {
+    return null;
+  }
+  // Import at function level to avoid circular dependencies
+  const { computeWeakETag } = await import("../utils/etag.js");
+  return computeWeakETag(revision);
 };
 
 export type CancelVaultResult =
