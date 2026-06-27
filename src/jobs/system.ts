@@ -1,5 +1,11 @@
 import { createDefaultJobHandlers } from './handlers.js'
-import { InMemoryJobQueue, type QueueMetrics, type QueuedJobReceipt } from './queue.js'
+import {
+  InMemoryJobQueue,
+  type QueueMetrics,
+  type QueuedJobReceipt,
+  type QueueDepthReport,
+  type SweepResult,
+} from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
 import {
@@ -31,6 +37,7 @@ export class BackgroundJobSystem {
       concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
       pollIntervalMs: parsePositiveInteger(process.env.JOB_QUEUE_POLL_INTERVAL_MS, 250),
       historyLimit: parsePositiveInteger(process.env.JOB_HISTORY_LIMIT, 50),
+      staleLeaseMs: parsePositiveInteger(process.env.JOB_STALE_LEASE_MS, 300_000),
     })
     const resolvedNotificationService =
       notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
@@ -104,6 +111,17 @@ export class BackgroundJobSystem {
 
   getMetrics(): QueueMetrics {
     return this.queue.getMetrics()
+  }
+
+  getQueueDepthReport(staleLeaseMs?: number): QueueDepthReport {
+    return this.queue.getQueueDepthReport(staleLeaseMs)
+  }
+
+  sweepStaleLeases(staleLeaseMs?: number): SweepResult {
+    if (this.shuttingDown) {
+      throw new Error('Cannot sweep jobs: system is shutting down')
+    }
+    return this.queue.sweepStaleLeases(staleLeaseMs)
   }
 
   private scheduleRecurringJobs(): void {
