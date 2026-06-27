@@ -44,6 +44,25 @@ export interface WebhookDeliveryResult {
   attempts: number
 }
 
+export type BreakerStateValue = 'CLOSED' | 'OPEN' | 'HALF_OPEN'
+
+export interface BreakerState {
+  subscriberId: string
+  state: BreakerStateValue
+  failureCount: number
+  lastFailureAt: string | null
+  trippedAt: string | null
+  halfOpenAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CircuitBreakerConfig {
+  threshold: number
+  windowMs: number
+  halfOpenTimeoutMs: number
+}
+
 /** Vault lifecycle event types that trigger webhook delivery. */
 export const VAULT_LIFECYCLE_EVENTS = new Set([
   'vault_created',
@@ -53,6 +72,191 @@ export const VAULT_LIFECYCLE_EVENTS = new Set([
 ])
 
 const repo = new WebhookSubscriberRepository(db)
+
+// ── Circuit breaker config ────────────────────────────────────────────────────
+
+export const getCircuitBreakerConfig = (): CircuitBreakerConfig => {
+  const parsePositiveInt = (val: string | undefined, fallback: number): number => {
+    if (val === undefined || val === '') return fallback
+    const n = Number(val)
+    return Number.isFinite(n) && n >= 0 ? n : fallback
+  }
+  return {
+    threshold: parsePositiveInt(process.env.WEBHOOK_CIRCUIT_BREAKER_THRESHOLD, 5),
+    windowMs: parsePositiveInt(process.env.WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS, 60_000),
+    halfOpenTimeoutMs: parsePositiveInt(process.env.WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS, 30_000),
+  }
+}
+
+// ── In-memory breaker cache ───────────────────────────────────────────────────
+
+const breakerCache = new Map<string, BreakerState>()
+const inFlightProbes = new Set<string>()
+
+const loadBreakerState = async (subscriberId: string): Promise<BreakerState> => {
+  const cached = breakerCache.get(subscriberId)
+  if (cached) return cached
+
+  const persisted = await repo.getBreakerState(subscriberId)
+  if (persisted) {
+    breakerCache.set(subscriberId, persisted)
+    return persisted
+  }
+
+  const defaults: BreakerState = {
+    subscriberId,
+    state: 'CLOSED',
+    failureCount: 0,
+    lastFailureAt: null,
+    trippedAt: null,
+    halfOpenAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+  breakerCache.set(subscriberId, defaults)
+  return defaults
+}
+
+/**
+ * Resets the in-memory breaker cache and in-flight probe tracker.
+ * Exported for testing only.
+ */
+export const resetBreakerCache = (): void => {
+  breakerCache.clear()
+  inFlightProbes.clear()
+}
+
+/**
+ * Records a delivery failure and transitions breaker state if the threshold is exceeded.
+ * Returns the updated breaker state.
+ */
+export const recordBreakerFailure = async (
+  subscriberId: string,
+  config: CircuitBreakerConfig = getCircuitBreakerConfig(),
+): Promise<BreakerState> => {
+  const state = await loadBreakerState(subscriberId)
+  const now = new Date().toISOString()
+  const nowMs = Date.now()
+
+  const lastFailureMs = state.lastFailureAt ? new Date(state.lastFailureAt).getTime() : 0
+  const withinWindow = lastFailureMs > 0 && (nowMs - lastFailureMs) < config.windowMs
+
+  const newFailureCount = withinWindow ? state.failureCount + 1 : 1
+
+  if (newFailureCount >= config.threshold) {
+    const trippedState: BreakerState = {
+      ...state,
+      state: 'OPEN',
+      failureCount: newFailureCount,
+      lastFailureAt: now,
+      trippedAt: now,
+      halfOpenAt: null,
+      updatedAt: now,
+    }
+    breakerCache.set(subscriberId, trippedState)
+    await repo.upsertBreakerState(subscriberId, {
+      state: 'OPEN',
+      failureCount: newFailureCount,
+      lastFailureAt: now,
+      trippedAt: now,
+      halfOpenAt: null,
+    })
+    return trippedState
+  }
+
+  const failedState: BreakerState = {
+    ...state,
+    failureCount: newFailureCount,
+    lastFailureAt: now,
+    updatedAt: now,
+  }
+  breakerCache.set(subscriberId, failedState)
+  await repo.upsertBreakerState(subscriberId, {
+    state: 'CLOSED',
+    failureCount: newFailureCount,
+    lastFailureAt: now,
+    trippedAt: null,
+    halfOpenAt: null,
+  })
+  return failedState
+}
+
+/**
+ * Records a successful delivery, resetting the breaker to CLOSED (if half-open)
+ * or keeping it CLOSED (if already closed).
+ */
+export const recordBreakerSuccess = async (subscriberId: string): Promise<BreakerState> => {
+  const state = await loadBreakerState(subscriberId)
+
+  const updated: BreakerState = {
+    ...state,
+    state: 'CLOSED',
+    failureCount: 0,
+    lastFailureAt: null,
+    trippedAt: null,
+    halfOpenAt: null,
+    updatedAt: new Date().toISOString(),
+  }
+  breakerCache.set(subscriberId, updated)
+  await repo.upsertBreakerState(subscriberId, {
+    state: 'CLOSED',
+    failureCount: 0,
+    lastFailureAt: null,
+    trippedAt: null,
+    halfOpenAt: null,
+  })
+  return updated
+}
+
+/**
+ * Checks the circuit breaker state for a subscriber and returns whether
+ * delivery is allowed. If the breaker is OPEN and the half-open timeout
+ * has elapsed, attempts an atomic transition to HALF_OPEN.
+ *
+ * @returns An object with `allowed` and optionally `shortCircuitReason`.
+ */
+export const checkBreaker = async (
+  subscriberId: string,
+  config: CircuitBreakerConfig = getCircuitBreakerConfig(),
+): Promise<{ allowed: boolean; shortCircuitReason?: string }> => {
+  const state = await loadBreakerState(subscriberId)
+
+  if (state.state === 'CLOSED') {
+    return { allowed: true }
+  }
+
+  if (state.state === 'OPEN') {
+    const trippedMs = state.trippedAt ? new Date(state.trippedAt).getTime() : 0
+    const timeoutElapsed = trippedMs > 0 && (Date.now() - trippedMs) >= config.halfOpenTimeoutMs
+
+    if (timeoutElapsed) {
+      const transitioned = await repo.tryTransitionToHalfOpen(subscriberId, new Date())
+      if (transitioned) {
+        const now = new Date().toISOString()
+        const halfOpenState: BreakerState = {
+          ...state,
+          state: 'HALF_OPEN',
+          halfOpenAt: now,
+          updatedAt: now,
+        }
+        breakerCache.set(subscriberId, halfOpenState)
+        return { allowed: true }
+      }
+      return { allowed: false, shortCircuitReason: 'Circuit breaker open — probe already in flight' }
+    }
+
+    return { allowed: false, shortCircuitReason: 'Circuit breaker open' }
+  }
+
+  if (state.state === 'HALF_OPEN') {
+    if (inFlightProbes.has(subscriberId)) {
+      return { allowed: false, shortCircuitReason: 'Circuit breaker half-open — probe already in flight' }
+    }
+    return { allowed: true }
+  }
+
+  return { allowed: true }
+}
 
 /**
  * Returns true when a URL is safe to deliver to.
@@ -150,7 +354,15 @@ export const addSubscriber = async (
   return repo.create({ organizationId, url, secret, events })
 }
 
-export const removeSubscriber = async (id: string): Promise<boolean> => repo.remove(id)
+export const removeSubscriber = async (id: string): Promise<boolean> => {
+  const removed = await repo.remove(id)
+  if (removed) {
+    breakerCache.delete(id)
+    inFlightProbes.delete(id)
+    await repo.removeBreakerState(id).catch(() => {})
+  }
+  return removed
+}
 
 export const listSubscribers = async (organizationId: string): Promise<WebhookSubscriber[]> =>
   repo.findByOrg(organizationId)
@@ -204,6 +416,8 @@ const deliverOnce = async (
 /**
  * Dispatches a webhook event to all eligible active subscribers for the
  * given organization with exponential-backoff retry (max 3 attempts).
+ * Circuit breaker state is checked per subscriber before delivery;
+ * open breakers short-circuit to the dead-letter store.
  * Failures are collected rather than thrown so one bad subscriber cannot
  * block the others.
  */
@@ -211,11 +425,31 @@ export const dispatchWebhookEvent = async (
   payload: WebhookDeliveryPayload,
 ): Promise<WebhookDeliveryResult[]> => {
   const eligible = await repo.findByEvent(payload.organizationId, payload.eventType)
+  const config = getCircuitBreakerConfig()
 
   return Promise.all(
     eligible.map(async (subscriber): Promise<WebhookDeliveryResult> => {
       let attempts = 0
       let lastStatusCode: number | undefined
+
+      // ── Circuit breaker check ──────────────────────────────
+      const breaker = await checkBreaker(subscriber.id, config)
+      if (!breaker.allowed) {
+        await deadLetter(subscriber.id, payload, breaker.shortCircuitReason ?? 'Circuit breaker open', 0)
+        return {
+          subscriberId: subscriber.id,
+          url: subscriber.url,
+          success: false,
+          error: breaker.shortCircuitReason ?? 'Circuit breaker open',
+          attempts: 0,
+        }
+      }
+
+      // Track in-flight probes for half-open state
+      const isHalfOpenProbe = breakerCache.get(subscriber.id)?.state === 'HALF_OPEN'
+      if (isHalfOpenProbe) {
+        inFlightProbes.add(subscriber.id)
+      }
 
       try {
         await retryWithBackoff(
@@ -232,6 +466,12 @@ export const dispatchWebhookEvent = async (
           },
         )
 
+        // ── Success — reset breaker ──────────────────────────
+        if (isHalfOpenProbe) {
+          inFlightProbes.delete(subscriber.id)
+        }
+        await recordBreakerSuccess(subscriber.id, config)
+
         return {
           subscriberId: subscriber.id,
           url: subscriber.url,
@@ -240,8 +480,16 @@ export const dispatchWebhookEvent = async (
           attempts,
         }
       } catch (err: any) {
+        if (isHalfOpenProbe) {
+          inFlightProbes.delete(subscriber.id)
+        }
+
         console.error(`[Webhooks] delivery failed for subscriber ${subscriber.id}:`, err?.message)
         const error = err?.message ?? 'Unknown error'
+
+        // ── Failure — record in breaker ─────────────────────
+        await recordBreakerFailure(subscriber.id, config)
+
         await deadLetter(subscriber.id, payload, error, attempts)
         return {
           subscriberId: subscriber.id,
@@ -300,4 +548,21 @@ export const replayDeadLetter = async (
   } catch (err: any) {
     return { replayed: false, error: err?.message ?? 'Delivery failed' }
   }
+}
+
+export const getBreakerStatesForMetrics = async (): Promise<{
+  closed: number
+  open: number
+  halfOpen: number
+}> => {
+  const states = await repo.getAllBreakerStates()
+  let closed = 0
+  let open = 0
+  let halfOpen = 0
+  for (const s of states) {
+    if (s.state === 'CLOSED') closed++
+    else if (s.state === 'OPEN') open++
+    else if (s.state === 'HALF_OPEN') halfOpen++
+  }
+  return { closed, open, halfOpen }
 }

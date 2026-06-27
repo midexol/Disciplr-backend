@@ -196,6 +196,9 @@ export const envSchema = z
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
+    WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
+    WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
+    WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
 
     // ── Export S3 ───────────────────────────────────────────
     EXPORT_S3_BUCKET: z.string().optional(),

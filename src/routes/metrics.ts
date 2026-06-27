@@ -4,6 +4,7 @@ import { getDBHealthMetrics } from '../services/dbMetrics.js';
 import { pool, db } from '../db/index.js';
 import { BackgroundJobSystem } from '../jobs/system.js';
 import { getLatestListenerLag } from '../services/monitor.js';
+import { getBreakerStatesForMetrics } from '../services/webhooks.js';
 
 // Create a Registry which registers the metrics
 const register = new client.Registry();
@@ -49,6 +50,24 @@ const outboxLagGauge = new client.Gauge({
   registers: [register],
 });
 
+const webhookBreakerClosedGauge = new client.Gauge({
+  name: 'disciplr_webhook_breaker_closed',
+  help: 'Number of webhook subscribers with closed circuit breaker',
+  registers: [register],
+});
+
+const webhookBreakerOpenGauge = new client.Gauge({
+  name: 'disciplr_webhook_breaker_open',
+  help: 'Number of webhook subscribers with open circuit breaker',
+  registers: [register],
+});
+
+const webhookBreakerHalfOpenGauge = new client.Gauge({
+  name: 'disciplr_webhook_breaker_half_open',
+  help: 'Number of webhook subscribers with half-open circuit breaker',
+  registers: [register],
+});
+
 const router = express.Router();
 
 router.get('/metrics', async (_req: Request, res: Response) => {
@@ -84,6 +103,16 @@ router.get('/metrics', async (_req: Request, res: Response) => {
     outboxLagGauge.set(lagSeconds);
   } catch (error) {
     console.error('Error fetching outbox lag metric:', error);
+  }
+
+  // Webhook circuit breaker metrics
+  try {
+    const breakerMetrics = await getBreakerStatesForMetrics();
+    webhookBreakerClosedGauge.set(breakerMetrics.closed);
+    webhookBreakerOpenGauge.set(breakerMetrics.open);
+    webhookBreakerHalfOpenGauge.set(breakerMetrics.halfOpen);
+  } catch (error) {
+    console.error('Error fetching webhook breaker metrics:', error);
   }
 
   res.set('Content-Type', register.contentType);
