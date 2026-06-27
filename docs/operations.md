@@ -260,3 +260,23 @@ The abuse monitor now emits structured `security.abuse_detected` events instead 
   "alertCooldownMs": 300000
 }
 ```
+
+## Redis Cache-Aside Layer
+
+To reduce database read pressure on Postgres, Disciplr-backend implements a Redis cache-aside layer for hot read paths (feature flags and the analytics summary).
+
+### Configuration
+
+| Variable    | Default | Description                                                                                      |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `REDIS_URL` | -       | Optional Redis connection URL (starting with `redis://` or `rediss://`).                         |
+
+### In-Process Fallback
+
+If `REDIS_URL` is not provided (e.g., during tests or local development), the cache layer automatically falls back to an in-process Map-based LRU cache.
+- **Max Capacity**: 1000 items (oldest/least recently accessed items are evicted first).
+- **TTL Support**: Entries expire and are evicted when they exceed their defined TTL.
+
+### Serialization & Schema Updates
+
+To prevent stale-shaped objects from causing schema mismatch issues, all cached payloads are explicitly version-tagged (e.g., `{"version":"v1","data":...}`). Any version change triggers an automatic cache miss, ensuring that updated structures are always loaded fresh from the database.

@@ -52,6 +52,13 @@ export const envSchema = z
           url.startsWith("postgres://") || url.startsWith("postgresql://"),
         "DATABASE_URL must be a valid PostgreSQL connection URL",
       ),
+    REDIS_URL: z
+      .string()
+      .optional()
+      .refine(
+        (url) => !url || url.startsWith("redis://") || url.startsWith("rediss://"),
+        "REDIS_URL must be a valid Redis connection URL (starting with redis:// or rediss://)",
+      ),
 
     // ── Auth / secrets ──────────────────────────────────────
     JWT_SECRET: z
