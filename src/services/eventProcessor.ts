@@ -5,6 +5,13 @@ import { createAuditLog } from '../lib/audit-logs.js'
 import { IdempotencyService } from './idempotency.js'
 import { dispatchWebhookEvent, VAULT_LIFECYCLE_EVENTS } from './webhooks.js'
 
+/** Extract organization_id from the vault referenced in the event payload. */
+async function resolveOrganizationId(db: Knex, payload: VaultEventPayload): Promise<string> {
+  if (!payload.vaultId) return ''
+  const vault = await db('vaults').where({ id: payload.vaultId }).select('organization_id').first()
+  return (vault as { organization_id?: string } | undefined)?.organization_id ?? ''
+}
+
 /**
  * Error thrown when a dependency (e.g., a vault for a milestone) is not yet in the DB.
  * This should be treated as retryable for out-of-order event handling.
@@ -86,17 +93,7 @@ export class EventProcessor {
         }
       })
 
-      // Fire-and-forget webhook dispatch for vault lifecycle events
-      if (VAULT_LIFECYCLE_EVENTS.has(event.eventType)) {
-        dispatchWebhookEvent({
-          eventId: event.eventId,
-          eventType: event.eventType,
-          timestamp: new Date().toISOString(),
-          data: event.payload as unknown as Record<string, unknown>,
-        }).catch((err) => {
-          console.error('[EventProcessor] webhook dispatch error:', err?.message)
-        })
-      }
+
 
       return { success: true, eventId: event.eventId }
     } catch (error) {
@@ -145,6 +142,27 @@ export class EventProcessor {
 
       await this.routeEvent(event, trx)
       await this.idempotency.markEventProcessed(event, trx)
+
+      // Write to outbox table atomically for vault lifecycle events
+      if (VAULT_LIFECYCLE_EVENTS.has(event.eventType)) {
+        const vaultPayload = event.payload as VaultEventPayload
+        const organizationId = await resolveOrganizationId(trx, vaultPayload)
+        await trx('vault_outbox').insert({
+          event_id: event.eventId,
+          event_type: event.eventType,
+          payload: JSON.stringify({
+            eventId: event.eventId,
+            eventType: event.eventType,
+            timestamp: new Date().toISOString(),
+            data: event.payload,
+            organizationId,
+          }),
+          processed: false,
+          attempts: 0,
+          created_at: new Date(),
+        })
+      }
+
       await trx.commit()
     } catch (error) {
       await trx.rollback()

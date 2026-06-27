@@ -158,6 +158,10 @@ The `email` provider includes bounded retries with exponential backoff for trans
 - Helmet + CORS
 - PostgreSQL migrations via Knex
 
+## Operations and recovery
+
+- See [docs/runbooks/disaster-recovery.md](docs/runbooks/disaster-recovery.md) for the backup, restore, and disaster-recovery procedure with RPO/RTO targets.
+
 ## Local setup
 
 Prerequisites:

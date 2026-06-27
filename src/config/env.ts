@@ -52,6 +52,13 @@ export const envSchema = z
           url.startsWith("postgres://") || url.startsWith("postgresql://"),
         "DATABASE_URL must be a valid PostgreSQL connection URL",
       ),
+    REDIS_URL: z
+      .string()
+      .optional()
+      .refine(
+        (url) => !url || url.startsWith("redis://") || url.startsWith("rediss://"),
+        "REDIS_URL must be a valid Redis connection URL (starting with redis:// or rediss://)",
+      ),
 
     // ── Auth / secrets ──────────────────────────────────────
     JWT_SECRET: z
@@ -157,6 +164,10 @@ export const envSchema = z
     ETL_BACKFILL_FROM: z.string().optional(),
     ETL_BACKFILL_TO: z.string().optional(),
 
+    // ── Metrics / Prometheus scraper access ────────────────
+    METRICS_TOKEN: z.string().optional(),
+    METRICS_ALLOWLIST: z.string().optional(),
+
     // ── Security thresholds ───────────────────────────────────
     SECURITY_RATE_LIMIT_WINDOW_MS: positiveInt(60_000),
     SECURITY_RATE_LIMIT_MAX_REQUESTS: positiveInt(120),
@@ -181,6 +192,13 @@ export const envSchema = z
     NOTIFICATION_PROVIDER: z.string().optional(),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
+
+    // ── Webhooks ────────────────────────────────────────────
+    WEBHOOK_INBOUND_SECRET: z.string().optional(),
+    WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
+    WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
+    WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
+    WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
 
     // ── Export S3 ───────────────────────────────────────────
     EXPORT_S3_BUCKET: z.string().optional(),

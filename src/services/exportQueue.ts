@@ -12,6 +12,28 @@ export type ExportFormat = 'csv' | 'json' | 'ndjson'
 export type ExportScope = 'vaults' | 'transactions' | 'analytics' | 'all'
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed'
 
+export type FailureReason = 'serialization_error' | 'data_fetch_error' | 'unknown_error'
+
+export interface DlqEntry {
+  jobId: string
+  jobType: string
+  failureReason: FailureReason
+  errorMessage: string
+  attemptCount: number
+  failedAt: string
+  sanitisedContext: Record<string, unknown>
+}
+
+export interface DlqMetricsEvent {
+  event: 'entry_added' | 'entry_requeued' | 'entry_discarded' | 'dlq_cleared'
+  jobId: string
+  failureReason?: FailureReason
+  dlqDepth: number
+  timestamp: string
+}
+
+export type DlqMetricsHook = (event: DlqMetricsEvent) => void
+
 export interface ExportJob {
   id: string
   userId: string
@@ -19,6 +41,7 @@ export interface ExportJob {
   targetUserId?: string
   scope: ExportScope
   format: ExportFormat
+  columns?: Record<keyof ExportData, string[]>
   status: JobStatus
   createdAt: string
   completedAt?: string
@@ -38,6 +61,7 @@ export interface EnqueueExportJobInput {
   targetUserId?: string
   scope: ExportScope
   format: ExportFormat
+  columns?: Record<keyof ExportData, string[]>
   idempotencyKey?: string
   maxAttempts?: number
 }
@@ -49,6 +73,7 @@ interface ExportJobRecord {
   target_user_id: string | null
   scope: ExportScope
   format: ExportFormat
+  columns: string | null
   status: JobStatus
   created_at: string
   completed_at: string | null
@@ -93,7 +118,7 @@ const RETRYABLE_EXPORT_JOB_STATUSES: JobStatus[] = ['pending', 'running']
 const EXPORT_SECTION_ORDER: Array<keyof ExportData> = ['vaults', 'transactions', 'analytics']
 const DEFAULT_MAX_ATTEMPTS = 3
 
-const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
+export const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
   vaults: {
     columns: [
       { key: 'id', header: 'id' },
@@ -138,13 +163,20 @@ const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
   },
 }
 
-const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format'>): string => {
+export const ALLOWED_COLUMNS: Record<keyof ExportData, string[]> = {
+  vaults: CSV_SCHEMAS.vaults.columns.map(c => c.key),
+  transactions: CSV_SCHEMAS.transactions.columns.map(c => c.key),
+  analytics: CSV_SCHEMAS.analytics.columns.map(c => c.key),
+}
+
+const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format' | 'columns'>): string => {
   return crypto
     .createHash('sha256')
     .update(JSON.stringify({
       targetUserId: input.targetUserId ?? null,
       scope: input.scope,
       format: input.format,
+      columns: input.columns ?? null,
     }))
     .digest('hex')
 }
@@ -178,6 +210,7 @@ const toExportJob = (record: ExportJobRecord): ExportJob => ({
   targetUserId: record.target_user_id ?? undefined,
   scope: record.scope,
   format: record.format,
+  columns: record.columns ? JSON.parse(record.columns) : undefined,
   status: record.status,
   createdAt: record.created_at,
   completedAt: record.completed_at ?? undefined,
@@ -198,6 +231,7 @@ const toRecord = (job: ExportJob): ExportJobRecord => ({
   target_user_id: job.targetUserId ?? null,
   scope: job.scope,
   format: job.format,
+  columns: job.columns ? JSON.stringify(job.columns) : null,
   status: job.status,
   created_at: job.createdAt,
   completed_at: job.completedAt ?? null,
@@ -311,6 +345,49 @@ export const configureExportJobRepository = (repository: ExportJobRepository): v
   exportJobRepository = repository
 }
 
+const DEFAULT_MAX_DLQ_SIZE = 100
+
+let dlqStore: DlqEntry[] = []
+let dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
+let dlqMetricsHook: DlqMetricsHook | undefined
+
+export const configureDlq = (options?: { maxSize?: number; metricsHook?: DlqMetricsHook }): void => {
+  if (options?.maxSize !== undefined) {
+    dlqMaxSize = Math.max(1, Math.floor(options.maxSize))
+  }
+  dlqMetricsHook = options?.metricsHook
+}
+
+const sanitiseDlqContext = (job: ExportJob): Record<string, unknown> => {
+  return sanitizePrivacyPayload(
+    { ...exportUserTokens(job), scope: job.scope, format: job.format, isAdmin: job.isAdmin, requestHash: job.requestHash },
+    exportPiiValues(job),
+  ) as Record<string, unknown>
+}
+
+const dlqInsert = (entry: DlqEntry): void => {
+  while (dlqStore.length >= dlqMaxSize) {
+    dlqStore.shift()
+  }
+  dlqStore.push(entry)
+}
+
+const dlqRemove = (jobId: string): DlqEntry | undefined => {
+  const index = dlqStore.findIndex(e => e.jobId === jobId)
+  if (index === -1) return undefined
+  const [entry] = dlqStore.splice(index, 1)
+  return entry
+}
+
+const safeInvokeMetricsHook = (event: DlqMetricsEvent): void => {
+  if (!dlqMetricsHook) return
+  try {
+    dlqMetricsHook(event)
+  } catch {
+    console.warn(JSON.stringify({ level: 'warn', event: 'dlq.metrics_hook_failed', timestamp: new Date().toISOString() }))
+  }
+}
+
 export function createJob(params: Omit<ExportJob, 'id' | 'status' | 'createdAt' | 'attempts'>): Promise<ExportJob> {
   return exportJobRepository.create(params)
 }
@@ -321,6 +398,76 @@ export function getJob(id: string): Promise<ExportJob | undefined> {
 
 export async function resetExportJobs(): Promise<void> {
   await exportJobRepository.reset()
+}
+
+export const getDlqEntries = (): readonly DlqEntry[] => {
+  const copy = [...dlqStore]
+  copy.reverse()
+  return copy
+}
+
+export const getDlqEntry = (jobId: string): DlqEntry | undefined =>
+  dlqStore.find(e => e.jobId === jobId)
+
+export const getDlqDepth = (): number => dlqStore.length
+
+export const requeueDlqEntry = async (jobId: string): Promise<boolean> => {
+  const entry = dlqRemove(jobId)
+  if (!entry) return false
+
+  const job = await exportJobRepository.get(jobId)
+  if (!job) return false
+
+  await exportJobRepository.update({
+    ...job,
+    status: 'pending',
+    attempts: 0,
+    error: undefined,
+    completedAt: undefined,
+  })
+
+  safeInvokeMetricsHook({
+    event: 'entry_requeued',
+    jobId,
+    dlqDepth: dlqStore.length,
+    timestamp: new Date().toISOString(),
+  })
+
+  return true
+}
+
+export const discardDlqEntry = (jobId: string): boolean => {
+  const entry = dlqRemove(jobId)
+  if (!entry) return false
+
+  safeInvokeMetricsHook({
+    event: 'entry_discarded',
+    jobId,
+    dlqDepth: dlqStore.length,
+    timestamp: new Date().toISOString(),
+  })
+
+  return true
+}
+
+export const clearDlq = (): number => {
+  const count = dlqStore.length
+  dlqStore = []
+
+  safeInvokeMetricsHook({
+    event: 'dlq_cleared',
+    jobId: '',
+    dlqDepth: 0,
+    timestamp: new Date().toISOString(),
+  })
+
+  return count
+}
+
+export const resetDlq = (): void => {
+  dlqStore = []
+  dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
+  dlqMetricsHook = undefined
 }
 
 const buildExportDataFromVaultStore = (
@@ -481,37 +628,81 @@ function ndjsonGzipReadable(data: ExportData): Readable {
   return source.pipe(createGzip())
 }
 
+function filterExportData(
+  data: ExportData,
+  columns?: Record<keyof ExportData, string[]>,
+): ExportData {
+  const result: ExportData = {}
+
+  for (const sectionName of EXPORT_SECTION_ORDER) {
+    const rows = data[sectionName]
+    if (!rows) continue
+
+    const allowedColumns = columns?.[sectionName]
+    if (!allowedColumns) {
+      result[sectionName] = rows
+      continue
+    }
+
+    result[sectionName] = rows.map(row => {
+      const filteredRow: Record<string, unknown> = {}
+      for (const col of allowedColumns) {
+        if (col in row) {
+          filteredRow[col] = row[col]
+        }
+      }
+      return filteredRow
+    })
+  }
+
+  return result
+}
+
+function filterCsvSchema(
+  schema: ExportSectionSchema,
+  allowedColumns?: string[],
+): ExportSectionSchema {
+  if (!allowedColumns) return schema
+  return {
+    columns: schema.columns.filter(col => allowedColumns.includes(col.key)),
+  }
+}
+
 export function serializeExportData(
   data: ExportData,
   format: ExportFormat,
+  columns?: Record<keyof ExportData, string[]>,
 ): { buffer?: Buffer; filename: string; readable?: Readable } {
+  const filteredData = filterExportData(data, columns)
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
 
   if (format === 'json') {
     return {
-      buffer: Buffer.from(JSON.stringify(data, null, 2), 'utf8'),
+      buffer: Buffer.from(JSON.stringify(filteredData, null, 2), 'utf8'),
       filename: `export-${timestamp}.json`,
     }
   }
 
   if (format === 'ndjson') {
     const filename = `export-${timestamp}.ndjson.gz`
-    const readable = ndjsonGzipReadable(data)
+    const readable = ndjsonGzipReadable(filteredData)
     return { filename, readable }
   }
 
   const parts: string[] = [CSV_UTF8_BOM]
 
   for (const sectionName of EXPORT_SECTION_ORDER) {
-    const rows = data[sectionName]
+    const rows = filteredData[sectionName]
     const schema = CSV_SCHEMAS[sectionName]
     if (!rows || rows.length === 0) continue
+
+    const filteredSchema = filterCsvSchema(schema, columns?.[sectionName])
 
     parts.push(`# ${sectionName.toUpperCase()}\n`)
     parts.push(
       csvStringify(rows, {
         header: true,
-        columns: schema.columns,
+        columns: filteredSchema.columns,
         cast: { string: (value) => (value && /^[=+\-@\t\r]/.test(value) ? `'${value}` : value) },
       }),
     )
@@ -580,12 +771,17 @@ export async function processJob(
     completedAt: undefined,
   })
 
+  let _stage: 'data_fetch' | 'serialization' | undefined
   try {
     const scopedUserId = job.isAdmin ? job.targetUserId : job.userId
+    _stage = 'data_fetch'
     const data = vaultsStore
       ? buildExportDataFromVaultStore(job.scope, scopedUserId, vaultsStore)
       : await buildExportDataFromDatabase(job.scope, scopedUserId)
-    const { buffer, filename, readable } = serializeExportData(data, job.format)
+    _stage = 'serialization'
+    const { buffer, filename, readable } = serializeExportData(data, job.format, job.columns)
+    _stage = undefined
+
     const s3Config = resolveS3Config()
     let s3Key: string | undefined
     if (s3Config) {
@@ -653,6 +849,34 @@ export async function processJob(
         error: message,
       }, job)),
     )
+
+    if (!retryable) {
+      const failureReason: FailureReason = (() => {
+        if (_stage === 'data_fetch') return 'data_fetch_error'
+        if (_stage === 'serialization') return 'serialization_error'
+        return 'unknown_error'
+      })()
+
+      const entry: DlqEntry = {
+        jobId: job.id,
+        jobType: `${job.scope}:${job.format}`,
+        failureReason,
+        errorMessage: sanitizedMessage,
+        attemptCount: nextAttempt,
+        failedAt: new Date().toISOString(),
+        sanitisedContext: sanitiseDlqContext(job),
+      }
+
+      dlqInsert(entry)
+
+      safeInvokeMetricsHook({
+        event: 'entry_added',
+        jobId: entry.jobId,
+        failureReason: entry.failureReason,
+        dlqDepth: dlqStore.length,
+        timestamp: entry.failedAt,
+      })
+    }
 
     const sanitizedError = new Error(sanitizedMessage)
     sanitizedError.name = error instanceof Error ? error.name : 'Error'

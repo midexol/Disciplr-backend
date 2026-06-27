@@ -5,16 +5,17 @@ import { ApiScope } from '../types/auth.js'
 import { UserRole } from '../types/user.js'
 import { VaultService } from '../services/vault.service.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
-import { updateAnalyticsSummary } from '../db/database.js'
+import { updateAnalyticsSummary } from '../services/analytics.service.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import {
   getIdempotentResponse,
   hashRequestPayload,
   saveIdempotentResponse,
+  failPendingIdempotentResponse,
   IdempotencyConflictError,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
-import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById } from '../services/vaultStore.js'
+import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
 import { createVaultSchema, flattenZodErrors, isValidStellarAddress } from '../services/vaultValidation.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { queryParser } from '../middleware/queryParser.js'
@@ -81,7 +82,12 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
       }
     } catch (err) {
       if (err instanceof IdempotencyConflictError) {
-        res.status(409).json({ error: err.message })
+        res.status(409).json({
+          error: {
+            code: 'IDEMPOTENCY_CONFLICT',
+            message: err.message,
+          },
+        })
         return
       }
       throw err
@@ -137,6 +143,10 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     updateAnalyticsSummary()
     res.status(201).json(responseBody)
   } catch (error) {
+    if (idempotencyKey) {
+      failPendingIdempotentResponse(idempotencyKey, requestHash, error)
+    }
+
     console.error('Vault creation failed', error)
     res.status(500).json({ error: 'Failed to create vault.' })
   }

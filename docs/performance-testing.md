@@ -110,6 +110,7 @@ Run specific endpoint tests:
 npm test -- src/tests/performance/vaults.perf.test.ts
 npm test -- src/tests/performance/transactions.perf.test.ts
 npm test -- src/tests/performance/analytics.perf.test.ts
+npm test -- src/tests/performance/queryPlans.test.ts
 ```
 
 ### In CI
@@ -352,6 +353,43 @@ Tests emit structured JSON logs for monitoring:
 2. Identify repeated queries
 3. Use eager loading or joins to fetch related data
 4. Add query count assertions to tests
+
+## Query Plan Regression Benchmarks
+
+`src/tests/performance/queryPlans.test.ts` runs EXPLAIN-based checks against a
+bounded seeded dataset:
+
+| Dataset | Size |
+| --- | ---: |
+| Vaults | 240 rows in one organization |
+| Milestones | 240 rows, one per seeded vault |
+| Validations | 240 rows, one per seeded milestone |
+| Transactions | 960 rows split across two users |
+| Analytics summary | 1 row |
+
+The EXPLAIN assertions run inside a transaction with `SET LOCAL enable_seqscan = off`.
+This keeps the test focused on missing-index regressions: with the documented seed
+size PostgreSQL may prefer a sequential scan for cost reasons, but if an expected
+index is dropped or a predicate stops matching it, the plan will fail because no
+indexed path appears.
+
+Plan expectations:
+
+| Hot query | Required index path | Sequential scan allowed |
+| --- | --- | --- |
+| Vault list by tenant organization | `idx_vaults_organization_id` | No |
+| Transaction cursor page by user/timestamp | `idx_transactions_stellar_timestamp` | No |
+| Analytics summary by singleton id | `analytics_vault_summary_pkey` | No |
+
+The same test captures Knex `query` events for representative list shapes.
+Thresholds are intentionally tied to query shape rather than latency:
+
+| List shape | Page sizes compared | Expected query count |
+| --- | --- | ---: |
+| Vaults plus nested milestones and validations | 10 vs 80 vaults | 3 |
+| Transactions cursor list with count plus page fetch | 10 vs 80 transactions | 2 |
+
+Any increase in query count as page size grows is treated as an N+1 regression.
 
 ## Adding New Performance Tests
 

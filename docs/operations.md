@@ -2,6 +2,10 @@
 
 This document describes how to manage the Disciplr-backend service in production.
 
+## Disaster recovery
+
+The disaster-recovery runbook lives in [runbooks/disaster-recovery.md](runbooks/disaster-recovery.md) and covers backup cadence, restore steps, Horizon replay guidance, secret/key recovery, and the quarterly restore-drill checklist.
+
 ## Graceful Shutdown
 
 Disciplr-backend implements a graceful shutdown procedure to ensure that no data is lost and all resources are cleaned up correctly.
@@ -218,6 +222,19 @@ All environment variables are validated at startup using `src/config/env.ts`. If
 | `HTTP_HEADERS_TIMEOUT_MS`    | 61,000  | HTTP headers deadline timeout (milliseconds). Must be less than `HTTP_REQUEST_TIMEOUT_MS`. Set slightly above ALB idle timeout (60s). |
 | `HTTP_REQUEST_TIMEOUT_MS`    | 120,000 | Full request lifecycle timeout (milliseconds). Protects against stalled request bodies.                                               |
 
+## Rate Limiting
+
+Disciplr-backend implements rate limiting (e.g. for API keys, organization reads/writes, and endpoints).
+When `REDIS_URL` is configured, it uses a Redis-backed distributed token bucket to enforce these limits globally across all running backend replicas.
+
+### Fail-Open Semantics
+
+The distributed rate limiter is designed to **fail open**. If the Redis server is unreachable, or if an individual command fails (e.g., due to an intermittent network error), the rate limiter will log a warning and allow the request to proceed. 
+
+This fail-open behavior ensures that the API remains available to users even if the rate-limiting infrastructure experiences degradation, prioritizing uptime over strict abuse prevention during an outage. Unreachable Redis incidents are logged as `[RATE_LIMIT_STORE_ERROR]` with the underlying exception details.
+
+If `REDIS_URL` is not provided, the server falls back to the in-memory store for rate limiting (which is limited to per-replica boundaries).
+
 ## Structured Abuse Category Taxonomy (#467)
 
 The abuse monitor now emits structured `security.abuse_detected` events instead of free-form strings, enabling downstream aggregation by anomaly class.
@@ -260,3 +277,29 @@ The abuse monitor now emits structured `security.abuse_detected` events instead 
   "alertCooldownMs": 300000
 }
 ```
+
+## Redis Cache-Aside Layer
+
+To reduce database read pressure on Postgres, Disciplr-backend implements a Redis cache-aside layer for hot read paths (feature flags and the analytics summary).
+
+### Configuration
+
+| Variable    | Default | Description                                                                                      |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `REDIS_URL` | -       | Optional Redis connection URL (starting with `redis://` or `rediss://`).                         |
+
+### In-Process Fallback
+
+If `REDIS_URL` is not provided (e.g., during tests or local development), the cache layer automatically falls back to an in-process Map-based LRU cache.
+- **Max Capacity**: 1000 items (oldest/least recently accessed items are evicted first).
+- **TTL Support**: Entries expire and are evicted when they exceed their defined TTL.
+
+### Serialization & Schema Updates
+
+To prevent stale-shaped objects from causing schema mismatch issues, all cached payloads are explicitly version-tagged (e.g., `{"version":"v1","data":...}`). Any version change triggers an automatic cache miss, ensuring that updated structures are always loaded fresh from the database.
+
+## Runbooks
+
+| Scenario | Runbook |
+|---|---|
+| Horizon listener stalls; slash backlog builds | [horizon-stall.md](runbooks/horizon-stall.md) |

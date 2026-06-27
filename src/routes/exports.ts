@@ -15,6 +15,7 @@ import {
   isExportIdempotencyConflictError,
   type ExportFormat,
   type ExportScope,
+  ALLOWED_COLUMNS,
 } from '../services/exportQueue.js'
 import { checkAndIncrementExportQuota } from '../services/exportQuota.js'
 import { getEnv } from '../config/index.js'
@@ -40,21 +41,70 @@ const enforceExportQuota = async (
   return true
 }
 
+type ParseOptionsResult = {
+  format: ExportFormat
+  scope: ExportScope
+  columns?: Record<string, string[]>
+}
+
+const negotiateFormat = (req: AuthenticatedRequest, queryFormat?: string): ExportFormat => {
+  const normalizedQueryFormat = queryFormat?.toLowerCase()
+  if (normalizedQueryFormat && ['csv', 'json', 'ndjson'].includes(normalizedQueryFormat)) {
+    return normalizedQueryFormat as ExportFormat
+  }
+
+  const acceptHeader = req.headers.accept
+  if (acceptHeader) {
+    if (acceptHeader.includes('text/csv')) return 'csv'
+    if (acceptHeader.includes('application/x-ndjson')) return 'ndjson'
+    if (acceptHeader.includes('application/json')) return 'json'
+  }
+
+  return 'json'
+}
+
 export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   const router = Router()
 
-  const parseOptions = (req: AuthenticatedRequest): { format: ExportFormat; scope: ExportScope } | null => {
-    const format = (req.query.format ?? 'json') as string
+  const parseOptions = (req: AuthenticatedRequest): ParseOptionsResult | null => {
+    const format = negotiateFormat(req, req.query.format as string | undefined)
     const scope = (req.query.scope ?? 'all') as string
+    const columnsParam = req.query.columns as string | undefined
 
-    const validFormats = ['csv', 'json', 'ndjson']
     const validScopes = ['vaults', 'transactions', 'analytics', 'all']
-
-    if (!validFormats.includes(format) || !validScopes.includes(scope)) {
+    if (!validScopes.includes(scope)) {
       return null
     }
 
-    return { format: format as ExportFormat, scope: scope as ExportScope }
+    const result: ParseOptionsResult = {
+      format,
+      scope: scope as ExportScope,
+    }
+
+    if (columnsParam) {
+      try {
+        const parsedColumns: Record<string, string[]> = typeof columnsParam === 'string'
+          ? JSON.parse(columnsParam)
+          : columnsParam
+        result.columns = {}
+
+        for (const [section, cols] of Object.entries(parsedColumns)) {
+          const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
+          if (!allowed) {
+            return null
+          }
+
+          if (!Array.isArray(cols) || !cols.every(col => allowed.includes(col))) {
+            return null
+          }
+          result.columns[section as keyof typeof ALLOWED_COLUMNS] = cols
+        }
+      } catch {
+        return null
+      }
+    }
+
+    return result
   }
 
   const buildAcceptedResponse = (jobId: string) => ({
@@ -66,7 +116,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   router.post('/me', authenticate, requireScopes(ApiScope.ReadAnalytics, ApiScope.ReadVaults), async (req: AuthenticatedRequest, res: Response) => {
     const options = parseOptions(req)
     if (!options) {
-      res.status(400).json({ error: 'Invalid format or scope parameter' })
+      res.status(400).json({ error: 'Invalid format, scope, or columns parameter' })
       return
     }
 
@@ -78,6 +128,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         isAdmin: false,
         scope: options.scope,
         format: options.format,
+        columns: options.columns as any,
         idempotencyKey: req.header('idempotency-key') ?? undefined,
       })
 
@@ -96,7 +147,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   router.post('/admin', authenticate, requireAdmin, requireScopes(ApiScope.ReadAnalytics, ApiScope.ReadVaults), async (req: AuthenticatedRequest, res: Response) => {
     const options = parseOptions(req)
     if (!options) {
-      res.status(400).json({ error: 'Invalid format or scope parameter' })
+      res.status(400).json({ error: 'Invalid format, scope, or columns parameter' })
       return
     }
 
@@ -112,6 +163,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         targetUserId,
         scope: options.scope,
         format: options.format,
+        columns: options.columns as any,
         idempotencyKey: req.header('idempotency-key') ?? undefined,
       })
 

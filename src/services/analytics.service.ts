@@ -8,20 +8,23 @@ import {
 } from '../db/database.js'
 import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
 import { utcNow } from '../utils/timestamps.js'
+import { getOrSet, invalidate } from '../lib/cache.js'
 
 export async function getOverallAnalytics(): Promise<VaultAnalytics> {
-  const summary = await readAnalyticsSummary()
-  
-  return {
-    totalVaults: summary.total_vaults,
-    activeVaults: summary.active_vaults,
-    completedVaults: summary.completed_vaults,
-    failedVaults: summary.failed_vaults,
-    totalLockedCapital: summary.total_locked_capital,
-    activeCapital: summary.active_capital,
-    successRate: summary.success_rate,
-    lastUpdated: summary.last_updated,
-  }
+  return getOrSet('analytics:overall', 300, async () => {
+    const summary = await readAnalyticsSummary()
+    
+    return {
+      totalVaults: summary.total_vaults,
+      activeVaults: summary.active_vaults,
+      completedVaults: summary.completed_vaults,
+      failedVaults: summary.failed_vaults,
+      totalLockedCapital: summary.total_locked_capital,
+      activeCapital: summary.active_capital,
+      successRate: summary.success_rate,
+      lastUpdated: summary.last_updated,
+    }
+  })
 }
 
 export async function getAnalyticsByPeriod(period: string): Promise<VaultAnalyticsWithPeriod> {
@@ -110,4 +113,7 @@ export async function getCapitalAnalytics(period: string = 'all'): Promise<{
   }
 }
 
-export { dbUpdateSummary as updateAnalyticsSummary }
+export async function updateAnalyticsSummary(): Promise<void> {
+  await dbUpdateSummary()
+  await invalidate('analytics:overall')
+}
