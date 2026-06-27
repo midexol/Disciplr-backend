@@ -164,6 +164,10 @@ export const envSchema = z
     ETL_BACKFILL_FROM: z.string().optional(),
     ETL_BACKFILL_TO: z.string().optional(),
 
+    // ── Metrics / Prometheus scraper access ────────────────
+    METRICS_TOKEN: z.string().optional(),
+    METRICS_ALLOWLIST: z.string().optional(),
+
     // ── Security thresholds ───────────────────────────────────
     SECURITY_RATE_LIMIT_WINDOW_MS: positiveInt(60_000),
     SECURITY_RATE_LIMIT_MAX_REQUESTS: positiveInt(120),

@@ -12,6 +12,7 @@ const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
 // Define custom gauges
+// Aggregate-only — no tenant/org/user labels to avoid leaking tenant identity
 const jobQueueDepthGauge = new client.Gauge({
   name: 'disciplr_job_queue_depth',
   help: 'Current depth of the background job queue',
