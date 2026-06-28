@@ -124,11 +124,88 @@ Response (404):
 { "error": "Dead letter not found or already replayed" }
 ```
 
+## Test-Ping Endpoint
+
+`POST /api/webhooks/:id/test` lets subscribers self-verify their delivery URL and HMAC wiring before real vault events start flowing.
+
+### Authorization
+
+- Caller must be authenticated (Bearer JWT).
+- The subscriber must belong to the caller's organization (`enterpriseId` in the JWT must match `organizationId` on the subscriber). Cross-org pings return **403**.
+
+### Rate Limiting
+
+5 requests per subscriber per 60 seconds to prevent abuse as an SSRF probe.
+
+### Request
+
+```http
+POST /api/webhooks/{subscriberId}/test
+Authorization: Bearer <token>
+```
+
+No request body required.
+
+### Response (200 — always returned for delivery attempts)
+
+```json
+{
+  "delivered": true,
+  "statusCode": 200,
+  "latencyMs": 142,
+  "signatureHeader": "sha256=<hex-digest>"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `delivered` | boolean | `true` if the subscriber returned 2xx |
+| `statusCode` | number | HTTP status returned by the subscriber (present on delivery attempts) |
+| `latencyMs` | number | Round-trip time in milliseconds |
+| `signatureHeader` | string | The `x-disciplr-signature` value that was sent — use this to verify your HMAC code |
+| `error` | string | Error description when `delivered: false` |
+
+The subscriber's **secret is never returned** in the response. Use `signatureHeader` to confirm your HMAC implementation produces the same digest from the request body.
+
+### Synthetic Payload
+
+The test event uses the same versioned envelope (`buildVersionedPayload`) as real deliveries, so a passing test guarantees real deliveries will also verify. The event type is `webhook.test`.
+
+Example v1 body:
+```json
+{
+  "eventId": "test:<uuid>",
+  "eventType": "webhook.test",
+  "timestamp": "2026-06-28T00:00:00.000Z",
+  "data": { "message": "This is a test delivery from Disciplr…" },
+  "organizationId": "<your-org-id>",
+  "schema_version": 1
+}
+```
+
+### Error Cases
+
+| HTTP Status | Condition |
+|-------------|-----------|
+| 401 | Missing or invalid Bearer token |
+| 403 | Subscriber belongs to a different organization |
+| 404 | Subscriber not found |
+| 422 | Subscriber URL is blocked by the SSRF guard |
+| 429 | Rate limit exceeded (5 pings/subscriber/minute) |
+| 200 + `delivered: false` | Subscriber URL returned an error, timed out, or refused a redirect |
+
+---
+
 ## Testing
 
 Run webhook tests:
 ```bash
 npm test -- --testPathPattern=webhooks
+```
+
+Run the test-ping tests specifically:
+```bash
+npm test -- src/tests/webhooks.testPing.test.ts
 ```
 
 DLQ tests require a PostgreSQL database (`DATABASE_URL`). Without it, they are skipped gracefully.
