@@ -13,6 +13,8 @@ import {
   saveIdempotentResponse,
   failPendingIdempotentResponse,
   IdempotencyConflictError,
+  IdempotencyOwnerMismatchError,
+  type OwnerContext,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
 import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
@@ -73,14 +75,26 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
   const idempotencyKey = req.header('idempotency-key') ?? null
   const requestHash = hashRequestPayload(req.body)
 
+  // Derive owner from authenticated principal (JWT or API key)
+  const owner: OwnerContext = {
+    userId: req.user?.userId ?? req.apiKeyAuth?.userId ?? null,
+    orgId: req.apiKeyAuth?.orgId ?? req.user?.enterpriseId ?? null,
+  }
+
   if (idempotencyKey) {
     try {
-      const cached = await getIdempotentResponse<VaultCreateResponse>(idempotencyKey, requestHash)
+      const cached = await getIdempotentResponse<VaultCreateResponse>(idempotencyKey, requestHash, owner)
       if (cached !== null) {
         res.status(200).json({ ...cached, idempotency: { key: idempotencyKey, replayed: true } })
         return
       }
     } catch (err) {
+      if (err instanceof IdempotencyOwnerMismatchError) {
+        res.status(403).json({
+          error: { code: 'IDEMPOTENCY_OWNER_MISMATCH', message: err.message },
+        })
+        return
+      }
       if (err instanceof IdempotencyConflictError) {
         res.status(409).json({
           error: {
@@ -128,7 +142,7 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     }
 
     if (idempotencyKey) {
-      await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody)
+      await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody, owner)
     }
 
     const actorUserId = (req.header('x-user-id') ?? input.creator) || req.user?.userId || 'unknown'

@@ -4,6 +4,8 @@
 
 POST `/api/vaults` supports client-controlled idempotency via the `idempotency-key` request header. Sending the same key with an identical payload returns the original response without creating a duplicate vault. Sending the same key with a *different* payload returns a 409 to signal a conflict.
 
+Every idempotency key is bound to the authenticated principal (user + org) that first used it. A key can only be replayed by its original owner — a different user or org attempting to replay the same key string receives a 403 without seeing the stored response.
+
 ---
 
 ## Key Format
@@ -36,9 +38,10 @@ idempotency-key: <256 chars>             # exceeds maximum length
 | Condition | Status | Notes |
 |-----------|--------|-------|
 | No `idempotency-key` header | 201 | Normal creation; no deduplication |
-| Valid key, first request | 201 | Vault created; response cached server-side |
-| Valid key, repeated request, **same** payload | 200 | Cached response replayed; `idempotency.replayed: true` |
-| Valid key, repeated request, **different** payload | 409 | Conflict; no side effects |
+| Valid key, first request | 201 | Vault created; response cached and bound to caller |
+| Valid key, repeated request, **same** payload, **same owner** | 200 | Cached response replayed; `idempotency.replayed: true` |
+| Valid key, repeated request, **different** payload, same owner | 409 | Conflict; no side effects |
+| Valid key, request from **different user or org** | 403 | Owner mismatch; stored response never disclosed |
 | Invalid key format | 400 | Key rejected before any business logic |
 
 ---
@@ -55,7 +58,7 @@ idempotency-key: <256 chars>             # exceeds maximum length
 }
 ```
 
-### 200 – Replayed (identical payload)
+### 200 – Replayed (identical payload, same owner)
 
 Same body as the original 201, with `idempotency.replayed` set to `true`:
 
@@ -74,6 +77,17 @@ Same body as the original 201, with `idempotency.replayed` set to `true`:
   "error": {
     "code": "INVALID_IDEMPOTENCY_KEY",
     "message": "Idempotency key must be 1–255 characters and contain only letters, digits, hyphens, and underscores."
+  }
+}
+```
+
+### 403 – Owner mismatch (different user or org attempting replay)
+
+```json
+{
+  "error": {
+    "code": "IDEMPOTENCY_OWNER_MISMATCH",
+    "message": "Idempotency key belongs to a different owner"
   }
 }
 ```
@@ -97,8 +111,9 @@ Same body as the original 201, with `idempotency.replayed` set to `true`:
 2. **Persist the key** alongside your local record before sending the request. This lets you retry safely after a timeout or network failure.
 3. **On 5xx or timeout**: retry with the **same** key and **same** payload. The server will deduplicate.
 4. **On 409**: do **not** retry. A different payload was already submitted under this key. Inspect the original request and generate a new key for a new operation.
-5. **On 400 (`INVALID_IDEMPOTENCY_KEY`)**: fix the key format before retrying.
-6. **On 200 (replay)**: treat this identically to a 201. The `vault.id` in the body is the canonical resource identifier.
+5. **On 403 (`IDEMPOTENCY_OWNER_MISMATCH`)**: the key was originally issued by a different principal. Generate a new key.
+6. **On 400 (`INVALID_IDEMPOTENCY_KEY`)**: fix the key format before retrying.
+7. **On 200 (replay)**: treat this identically to a 201. The `vault.id` in the body is the canonical resource identifier.
 
 ---
 
@@ -110,11 +125,15 @@ The server hashes the request body using SHA-256 over a canonicalised (key-sorte
 
 ## Security Assumptions
 
-### Cross-user isolation
+### Cross-user isolation (owner binding)
 
-Idempotency keys are scoped to the authenticated user. User A and User B can each send requests with the key `my-key` independently without interfering with each other. The server stores keys internally as `{userId}:{clientKey}`, which is opaque to the client.
+Every stored idempotency key is bound to the `userId` and `orgId` of the authenticated principal at write time. On replay the server compares the requesting principal against the stored owner:
 
-**Consequence**: a 409 from a given key is always user-specific. It is not possible for one user to trigger a conflict for another user.
+- **Same userId + same orgId** → replay allowed (exactly-once guarantee for the original owner).
+- **Different userId or different orgId** → 403 returned; the stored response body is **never** disclosed.
+- **Legacy / anonymous keys** (stored before owner binding was deployed, `user_id IS NULL AND org_id IS NULL`) → any caller may replay for backward compatibility.
+
+The owner check happens **before** the hash check, so a cross-user attempt never produces a 409 or reveals whether the key was used with a matching payload.
 
 ### Response poisoning
 
@@ -126,13 +145,30 @@ The idempotency guarantee covers a single endpoint: `POST /api/vaults`. Other en
 
 ---
 
+## Migration
+
+Owner columns were added in migration `20260628000000_add_owner_to_idempotency_keys.cjs`:
+
+```sql
+ALTER TABLE idempotency_keys ADD COLUMN user_id VARCHAR(255);
+ALTER TABLE idempotency_keys ADD COLUMN org_id  VARCHAR(255);
+CREATE INDEX idx_idempotency_keys_user_id ON idempotency_keys (user_id);
+CREATE INDEX idx_idempotency_keys_org_id  ON idempotency_keys (org_id);
+```
+
+Rows present before the migration receive `NULL` for both columns and are treated as legacy/anonymous entries.
+
+---
+
 ## Implementation Notes
 
 | Component | Location |
 |-----------|----------|
-| Key validation | `src/services/idempotency.ts` → `validateIdempotencyKey` |
+| Owner context type | `src/services/idempotency.ts` → `OwnerContext` |
+| Owner mismatch error | `src/services/idempotency.ts` → `IdempotencyOwnerMismatchError` |
 | Payload hashing | `src/services/idempotency.ts` → `hashRequestPayload` |
 | Store read/write | `src/services/idempotency.ts` → `getIdempotentResponse` / `saveIdempotentResponse` |
-| Route integration | `src/routes/vaults.ts` → `POST /` handler |
-| Unit tests | `src/tests/eventIdempotency.test.ts` (describe blocks: `validateIdempotencyKey`, `hashRequestPayload`, `idempotency store`) |
-| Route-level tests | `tests/vaults.test.ts` and `src/routes/vaults.test.ts` |
+| DB service | `src/services/idempotency.ts` → `IdempotencyService.getStoredResponse` / `storeResponse` |
+| Route integration | `src/routes/vaults.ts` → `POST /` handler (owner extracted from `req.user` / `req.apiKeyAuth`) |
+| Owner-binding tests | `src/tests/idempotency.ownerBinding.test.ts` |
+| DB migration | `db/migrations/20260628000000_add_owner_to_idempotency_keys.cjs` |
