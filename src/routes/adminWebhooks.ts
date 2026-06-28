@@ -9,6 +9,9 @@ import {
   upsertSubscriber,
   rotateSubscriberSecret,
   listSubscribers,
+  addEgressAllowlistEntry,
+  removeEgressAllowlistEntry,
+  listEgressAllowlist,
 } from '../services/webhooks.js'
 import { isPaused, pauseDelivery, resumeDelivery } from '../services/pauseStore.js'
 
@@ -268,4 +271,94 @@ adminWebhooksRouter.post('/resume', (req: Request, res: Response) => {
   })
 
   res.status(200).json({ paused: false })
+})
+
+// ── Egress allowlist CRUD ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/webhooks/egress-allowlist?organization_id=<org>
+ *
+ * Lists all egress allowlist entries for an organization.
+ */
+adminWebhooksRouter.get('/egress-allowlist', async (req: Request, res: Response) => {
+  const organizationId = req.query.organization_id as string | undefined
+  if (!organizationId) {
+    res.status(400).json({ error: 'organization_id query param is required' })
+    return
+  }
+  try {
+    const entries = await listEgressAllowlist(organizationId)
+    res.status(200).json({ egress_allowlist: entries })
+  } catch (error) {
+    console.error('Error listing egress allowlist:', error)
+    res.status(500).json({ error: 'Failed to list egress allowlist' })
+  }
+})
+
+/**
+ * POST /api/admin/webhooks/egress-allowlist
+ *
+ * Adds a host to an org's egress allowlist. Idempotent.
+ * Body: { organization_id, host }
+ */
+adminWebhooksRouter.post('/egress-allowlist', async (req: Request, res: Response) => {
+  const { organization_id, host } = req.body ?? {}
+  if (!organization_id || typeof organization_id !== 'string') {
+    res.status(400).json({ error: 'organization_id is required' })
+    return
+  }
+  if (!host || typeof host !== 'string') {
+    res.status(400).json({ error: 'host is required' })
+    return
+  }
+  try {
+    const entry = await addEgressAllowlistEntry(organization_id, host)
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'webhook.egress_allowlist.add',
+      target_type: 'org_webhook_egress_allowlist',
+      target_id: entry.id,
+      metadata: { organizationId: organization_id, host },
+    })
+    res.status(201).json(entry)
+  } catch (error) {
+    console.error('Error adding egress allowlist entry:', error)
+    res.status(500).json({ error: 'Failed to add egress allowlist entry' })
+  }
+})
+
+/**
+ * DELETE /api/admin/webhooks/egress-allowlist
+ *
+ * Removes a host from an org's egress allowlist.
+ * Body: { organization_id, host }
+ */
+adminWebhooksRouter.delete('/egress-allowlist', async (req: Request, res: Response) => {
+  const { organization_id, host } = req.body ?? {}
+  if (!organization_id || typeof organization_id !== 'string') {
+    res.status(400).json({ error: 'organization_id is required' })
+    return
+  }
+  if (!host || typeof host !== 'string') {
+    res.status(400).json({ error: 'host is required' })
+    return
+  }
+  try {
+    const removed = await removeEgressAllowlistEntry(organization_id, host)
+    if (!removed) {
+      res.status(404).json({ error: 'Entry not found' })
+      return
+    }
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'webhook.egress_allowlist.remove',
+      target_type: 'org_webhook_egress_allowlist',
+      target_id: `${organization_id}:${host}`,
+      metadata: { organizationId: organization_id, host },
+    })
+    res.status(200).json({ removed: true })
+  } catch (error) {
+    console.error('Error removing egress allowlist entry:', error)
+    res.status(500).json({ error: 'Failed to remove egress allowlist entry' })
+  }
 })

@@ -396,3 +396,83 @@ const signatureString = `${timestamp}.${nonce}.${rawBody}`;
 const digest = crypto.createHmac('sha256', secret).update(signatureString).digest('hex');
 const signatureHeader = `sha256=${digest}`;
 ```
+
+## Per-Organization Egress Allowlist
+
+In addition to the global SSRF guard, operators can configure a per-org allowlist of permitted destination hosts. When at least one entry exists for an organization, webhook delivery is restricted to URLs whose hostname matches an allowlist entry (exact match or subdomain).
+
+### Behaviour
+
+| Org allowlist state | URL passes SSRF guard | Result |
+|---|---|---|
+| Empty (not configured) | ✓ | Delivery allowed (baseline SSRF guard only) |
+| Non-empty | ✓, host on allowlist | Delivery allowed |
+| Non-empty | ✓, host **not** on allowlist | Delivery denied — goes to dead-letter queue |
+| Any | ✗ (private IP, loopback, etc.) | Delivery denied (unconditional baseline) |
+
+The SSRF guard is always applied first, regardless of allowlist configuration. An allowlist entry for a private address cannot bypass the SSRF guard.
+
+Enforcement is applied at **two points**:
+
+1. **Subscriber registration** (`addSubscriber` / `upsertSubscriber`) — the URL is validated at creation time.
+2. **Delivery time** (`dispatchWebhookEvent` / `replayDeadLetter`) — the subscriber's URL is re-checked before each delivery attempt. A host removed from the allowlist after registration stops receiving events immediately.
+
+### Subdomain matching
+
+An entry of `example.com` permits both `hooks.example.com` and `api.hooks.example.com` (any subdomain at any depth). An entry of `hooks.example.com` only permits that host and its subdomains, not `example.com` itself.
+
+### Admin API
+
+All allowlist endpoints require admin authentication.
+
+#### List entries
+
+```
+GET /api/admin/webhooks/egress-allowlist?organization_id=<org>
+```
+
+Response:
+```json
+{
+  "egress_allowlist": [
+    { "id": "uuid", "organizationId": "org-1", "host": "hooks.example.com", "createdAt": "..." }
+  ]
+}
+```
+
+#### Add entry
+
+```
+POST /api/admin/webhooks/egress-allowlist
+Content-Type: application/json
+
+{ "organization_id": "org-1", "host": "hooks.example.com" }
+```
+
+Idempotent — posting a host that already exists returns the existing entry with `201`.
+
+#### Remove entry
+
+```
+DELETE /api/admin/webhooks/egress-allowlist
+Content-Type: application/json
+
+{ "organization_id": "org-1", "host": "hooks.example.com" }
+```
+
+Returns `404` if the entry does not exist.
+
+> **Warning**: removing the last entry for an org leaves the allowlist empty, which **removes the policy restriction** (baseline SSRF guard only). To block all delivery for an org, deactivate subscribers instead.
+
+### Database
+
+Allowlist entries are persisted in `org_webhook_egress_allowlists`:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `organization_id` | VARCHAR(255) | Owning organization |
+| `host` | VARCHAR(253) | Permitted hostname (stored lowercase) |
+| `created_at` | TIMESTAMPTZ | Row creation time |
+
+A unique constraint on `(organization_id, host)` prevents duplicate entries.
