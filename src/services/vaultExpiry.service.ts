@@ -38,7 +38,8 @@ export const markVaultExpiries = async (
       type: 'vault_failure',
       title: 'Vault Deadline Reached',
       message: 'A vault in your account has expired and been marked as failed.',
-      data: { vaultId: vault.id }
+      data: { vaultId: vault.id },
+      organization_id: vault.organization_id
     })
   }
 
@@ -61,6 +62,7 @@ export const sendMilestoneReminders = async (
     .select(
       'vaults.id as vault_id',
       'vaults.creator as user_id',
+      'vaults.organization_id as organization_id',
       'milestones.id as milestone_id',
       'milestones.title as milestone_title',
       'milestones.due_date'
@@ -92,13 +94,14 @@ export const sendMilestoneReminders = async (
             type: 'milestone_reminder',
             title: `Milestone Reminder: ${vm.milestone_title}`,
             message: `Your milestone is due in ${leadTimeText}! Don't forget to check in before the deadline to avoid a slash.`,
-            data: { 
-              vaultId: vm.vault_id, 
-              milestoneId: vm.milestone_id, 
+            data: {
+              vaultId: vm.vault_id,
+              milestoneId: vm.milestone_id,
               dueDate: vm.due_date,
-              leadTimeMs 
+              leadTimeMs
             },
-            idempotency_key: idempotencyKey
+            idempotency_key: idempotencyKey,
+            organization_id: vm.organization_id
           })
           remindersSent++
         } catch (err) {

@@ -20,6 +20,10 @@ export interface CreateNotificationInput {
   message: string
   data?: NotificationData
   idempotency_key?: string
+  /** Organization the notification is dispatched on behalf of, used to consult notification preferences. */
+  organization_id?: string | null
+  /** Delivery channel consulted against per-org preferences. Defaults to 'email'. */
+  channel?: string
 }
 
 export type NotificationSortField = 'created_at' | 'read_at' | 'title' | 'type'

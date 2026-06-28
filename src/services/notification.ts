@@ -1,5 +1,6 @@
 import db from '../db/index.js'
 import type { Notification, CreateNotificationInput } from '../types/notification.js'
+import { isNotificationEnabled } from '../models/notificationPreferences.js'
 
 // Minimal structured logger — emits JSON to stdout, no PII (no user_id, title, message)
 const log = {
@@ -19,7 +20,13 @@ const log = {
   },
 }
 
-export const createNotification = async (input: CreateNotificationInput): Promise<Notification> => {
+export const createNotification = async (input: CreateNotificationInput): Promise<Notification | null> => {
+  const channel = input.channel ?? 'email'
+  const enabled = await isNotificationEnabled(input.organization_id, input.type, channel)
+  if (!enabled) {
+    return null
+  }
+
   const row: Record<string, unknown> = {
     user_id: input.user_id,
     type: input.type,
