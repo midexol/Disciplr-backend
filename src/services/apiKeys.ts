@@ -1,11 +1,9 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import argon2 from 'argon2'
 import type { Pool } from 'pg'
-import argon2 from 'argon2'
 import type { ApiKeyAuthContext, ApiKeyRecord, ApiScope } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
-import * as argon2 from 'argon2'
 
 interface CreateApiKeyInput {
   userId?: string
@@ -465,6 +463,24 @@ export const flushPendingUpdates = async (): Promise<void> => {
   const updates = Array.from(pendingUpdates.entries())
   pendingUpdates.clear()
 
+  const repo = getRepository()
+  if (repositoryOverride) {
+    for (const [id, data] of updates) {
+      try {
+        const record = await repo.getById(id)
+        if (record) {
+          record.lastUsedAt = data.lastUsedAt
+          record.lastIp = data.lastIp
+          record.requestCount = (record.requestCount ?? 0) + data.count
+          await repo.update(record)
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+    return
+  }
+
   const pool = getPgPool()
   if (pool) {
     try {
@@ -484,7 +500,6 @@ export const flushPendingUpdates = async (): Promise<void> => {
       console.error('Failed to flush API key usage updates to PG:', err)
     }
   } else {
-    const repo = getRepository()
     for (const [id, data] of updates) {
       try {
         const record = await repo.getById(id)

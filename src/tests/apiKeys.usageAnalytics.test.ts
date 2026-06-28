@@ -1,3 +1,4 @@
+import './setup.js'
 import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, test } from 'node:test'

@@ -1,3 +1,4 @@
+import '../tests/setup.js'
 import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -6,6 +7,11 @@ import { analyticsRouter } from './analytics.js'
 import { apiKeysRouter } from './apiKeys.js'
 import { resetApiKeysTable, setApiKeyRepositoryForTests } from '../services/apiKeys.js'
 import { setAuditLogWriterForTests } from '../lib/audit-logs.js'
+import { AuthService } from '../services/auth.service.js'
+
+let baseUrl = ''
+let server: ReturnType<express.Express['listen']> | null = null
+const originalValidate = AuthService.validateStepUpSession
 
 const makeRepo = () => {
   const store = new Map()
@@ -41,10 +47,10 @@ const makeRepo = () => {
   }
 }
 
-let baseUrl = ''
-let server: ReturnType<express.Express['listen']> | null = null
-
 beforeEach(async () => {
+  AuthService.validateStepUpSession = async (sessionId: string) => {
+    return { userId: sessionId } as any
+  }
   setApiKeyRepositoryForTests(makeRepo() as any)
   setAuditLogWriterForTests(async (entry: any) => {
     return {
@@ -67,6 +73,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  AuthService.validateStepUpSession = originalValidate
   if (!server) {
     return
   }
@@ -160,6 +167,7 @@ test('creates, lists, rotates, and revokes API keys for an authenticated user', 
     method: 'POST',
     headers: {
       'x-user-id': 'user-123',
+      'x-step-up-session-id': 'user-123',
     },
   })
 
@@ -239,6 +247,7 @@ test('validates scopes and rejects revoked API keys on protected analytics route
     method: 'POST',
     headers: {
       'x-user-id': 'user-321',
+      'x-step-up-session-id': 'user-321',
     },
   })
 
