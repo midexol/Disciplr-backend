@@ -1,5 +1,18 @@
 import type { CreateVaultInput, PersistedVault, VaultCreateResponse } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
+import { StrKey } from '@stellar/stellar-sdk'
+
+export function normalizeToClassicAddress(address: string): string {
+  try {
+    if (StrKey.isValidMed25519PublicKey(address)) {
+      const decoded = StrKey.decodeMed25519PublicKey(address)
+      return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    }
+  } catch {
+    // ignore
+  }
+  return address
+}
 
 const DEFAULT_CONTRACT_ID = 'CONTRACT_ID_NOT_CONFIGURED'
 const DEFAULT_SOURCE_ACCOUNT = 'SOURCE_ACCOUNT_NOT_CONFIGURED'
@@ -353,9 +366,9 @@ const buildPayload = (
     args: {
       vaultId: vault.id,
       amount: vault.amount,
-      verifier: vault.verifier,
-      successDestination: vault.successDestination,
-      failureDestination: vault.failureDestination,
+      verifier: normalizeToClassicAddress(vault.verifier),
+      successDestination: normalizeToClassicAddress(vault.successDestination),
+      failureDestination: normalizeToClassicAddress(vault.failureDestination),
       token: input.onChain?.token,
       milestones: vault.milestones.map((milestone) => ({
         id: milestone.id,

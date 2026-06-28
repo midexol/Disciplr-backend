@@ -6,7 +6,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
   label TEXT NOT NULL,
   scopes TEXT[] NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  revoked_at TIMESTAMPTZ
+  revoked_at TIMESTAMPTZ,
+  last_used_at TIMESTAMPTZ,
+  request_count INTEGER NOT NULL DEFAULT 0,
+  last_ip TEXT
 );
 
 CREATE INDEX IF NOT EXISTS api_keys_user_id_idx ON api_keys (user_id);

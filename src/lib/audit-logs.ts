@@ -74,9 +74,19 @@ const sanitizeMetadata = (metadata: Record<string, unknown> = {}): AuditLogMetad
   return normalized
 }
 
+let auditLogWriterOverride: ((entry: any) => Promise<AuditLog>) | null = null
+
+export const setAuditLogWriterForTests = (writer: any | null): void => {
+  auditLogWriterOverride = writer
+}
+
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
 ): Promise<AuditLog> => {
+  if (auditLogWriterOverride) {
+    return auditLogWriterOverride(entry)
+  }
+
   if (!entry.actor_user_id || !entry.action || !entry.target_type || !entry.target_id) {
     throw new Error('Invalid audit log entry: missing required fields')
   }

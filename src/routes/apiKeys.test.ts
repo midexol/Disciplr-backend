@@ -4,12 +4,55 @@ import { afterEach, beforeEach, test } from 'node:test'
 import express from 'express'
 import { analyticsRouter } from './analytics.js'
 import { apiKeysRouter } from './apiKeys.js'
-import { resetApiKeysTable } from '../services/apiKeys.js'
+import { resetApiKeysTable, setApiKeyRepositoryForTests } from '../services/apiKeys.js'
+import { setAuditLogWriterForTests } from '../lib/audit-logs.js'
+
+const makeRepo = () => {
+  const store = new Map()
+  return {
+    async create(record: any) {
+      store.set(record.id, { ...record })
+    },
+    async listForUser(userId: string) {
+      return Array.from(store.values())
+        .filter((record: any) => record.userId === userId)
+        .sort((left: any, right: any) => right.createdAt.localeCompare(left.createdAt))
+    },
+    async getById(id: string) {
+      return store.get(id) ?? null
+    },
+    async update(record: any) {
+      store.set(record.id, { ...record })
+      return store.get(record.id)
+    },
+    async findByIdForUser(id: string, userId: string) {
+      const record: any = store.get(id)
+      if (!record || record.userId !== userId) {
+        return null
+      }
+      return record
+    },
+    async findByHashPrefix(prefix: string) {
+      return Array.from(store.values()).filter((record: any) => record.keyHash.slice(0, 12) === prefix)
+    },
+    async reset() {
+      store.clear()
+    },
+  }
+}
 
 let baseUrl = ''
 let server: ReturnType<express.Express['listen']> | null = null
 
 beforeEach(async () => {
+  setApiKeyRepositoryForTests(makeRepo() as any)
+  setAuditLogWriterForTests(async (entry: any) => {
+    return {
+      id: 'mock-audit-id',
+      created_at: new Date().toISOString(),
+      ...entry,
+    } as any
+  })
   await resetApiKeysTable()
   const app = express()
   app.use(express.json())

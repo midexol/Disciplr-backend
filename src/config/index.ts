@@ -80,9 +80,9 @@ export function initEnv(
  */
 export function getEnv(): Env {
   if (!_validated) {
-    throw new Error('Environment not validated yet — call initEnv() first')
+    initEnv()
   }
-  return _validated
+  return _validated!
 }
 
 /** Reset internal state — exposed for tests only. */

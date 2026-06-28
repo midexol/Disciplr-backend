@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { Env, getJwtKeys, JwtKey } from '../config/env.js';
+import { getEnv } from '../config/index.js';
 
 // --------------- Secrets & Keys ---------------
 
@@ -74,8 +75,9 @@ function findKeyByKid(keys: JwtKey[], kid: string): JwtKey {
 }
 
 // --------------- JWT Generation ---------------
-export const generateAccessToken = (payload: { userId: string; role: string; jti?: string }, env: Env): string => {
-  const keys = getJwtKeys(env);
+export const generateAccessToken = (payload: { userId: string; role: string; jti?: string }, env?: Env): string => {
+  const resolvedEnv = env ?? getEnv();
+  const keys = getJwtKeys(resolvedEnv);
   const currentKey = getCurrentKey(keys);
   if (!currentKey) {
     // Fallback to single secret for legacy setups
@@ -105,8 +107,9 @@ export const generateAccessToken = (payload: { userId: string; role: string; jti
   });
 };
 
-export const generateRefreshToken = (payload: { userId: string }, env: Env): string => {
-  const keys = getJwtKeys(env);
+export const generateRefreshToken = (payload: { userId: string }, env?: Env): string => {
+  const resolvedEnv = env ?? getEnv();
+  const keys = getJwtKeys(resolvedEnv);
   const currentKey = getCurrentKey(keys);
   if (!currentKey) {
     return jwt.sign(payload, REFRESH_SECRET, {
@@ -120,11 +123,12 @@ export const generateRefreshToken = (payload: { userId: string }, env: Env): str
 };
 
 // --------------- JWT Verification ---------------
-export const verifyAccessToken = (token: string, env: Env) => {
+export const verifyAccessToken = (token: string, env?: Env) => {
   // Try to read kid from header first
   const decodedHeader = jwt.decode(token, { complete: true }) as any;
   const kid = decodedHeader?.header?.kid;
-  const keys = getJwtKeys(env);
+  const resolvedEnv = env ?? getEnv();
+  const keys = getJwtKeys(resolvedEnv);
   if (kid) {
     const key = findKeyByKid(keys, kid);
     return jwt.verify(token, key.secret, {
@@ -141,10 +145,11 @@ export const verifyAccessToken = (token: string, env: Env) => {
   }) as { userId: string; role: string; jti?: string; sub?: string };
 };
 
-export const verifyRefreshToken = (token: string, env: Env) => {
+export const verifyRefreshToken = (token: string, env?: Env) => {
   const decodedHeader = jwt.decode(token, { complete: true }) as any;
   const kid = decodedHeader?.header?.kid;
-  const keys = getJwtKeys(env);
+  const resolvedEnv = env ?? getEnv();
+  const keys = getJwtKeys(resolvedEnv);
   if (kid) {
     const key = findKeyByKid(keys, kid);
     return jwt.verify(token, key.secret, { clockTolerance: 30 }) as { userId: string };
